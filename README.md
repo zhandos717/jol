@@ -156,4 +156,6 @@ make clean       удалить всё вместе с данными (спро�
 | `OSRM_URL` | `http://osrm:5000` в compose | сервер маршрутов |
 | `PORT` | `8080` | порт приложения |
 
-Карта и данные OpenStreetMap — © участники OpenStreetMap, лицензия ODbL.
+## Лицензия
+
+Код — [MIT](LICENSE). Карта и данные OpenStreetMap — © участники OpenStreetMap, лицензия ODbL.
