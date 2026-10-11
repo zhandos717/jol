@@ -10,6 +10,7 @@ export const BaseConfig = z.object({
 export const DatabaseConfig = z.object({
   DATABASE_URL: z.string().url(),
   DB_SCHEMA: z.string().regex(/^[a-z_]+$/),
+  DB_POOL_MAX: z.coerce.number().int().positive().default(10),
 });
 
 /** Validates environment once at startup so a misconfigured container fails fast instead of at first request. */

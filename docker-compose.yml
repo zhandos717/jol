@@ -21,8 +21,17 @@ services:
     image: nginx:1.27-alpine
     ports: ["8080:80"]
     volumes:
-      - ./infra/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./infra/nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
       - ./apps/web:/usr/share/nginx/html:ro
+    environment:
+      UP_ACCOUNTS: accounts:8080
+      UP_FLEET: fleet:8080
+      UP_PRICING: pricing:8080
+      UP_DISPATCH: dispatch:8080
+      UP_INTERCITY: intercity:8080
+      UP_FOOD: food:8080
+      UP_REALTIME: realtime:8080
+      UP_OSRM: osrm:5000
     depends_on: [accounts, fleet, pricing, dispatch, intercity, food, realtime]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]

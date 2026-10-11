@@ -9,6 +9,7 @@
     { "path": "services/dispatch" },
     { "path": "services/intercity" },
     { "path": "services/realtime" },
-    { "path": "services/food" }
+    { "path": "services/food" },
+    { "path": "services/all-in-one" }
   ]
 }
