@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Мини Такси</title>
+<title>Jol — такси</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <link rel="stylesheet" href="app.css">
@@ -391,6 +391,11 @@ function stepText(s) {
   return `Поверните ${TURN[m.modifier] || 'прямо'}${road}`;
 }
 
+function fitAbovePanel(bounds) {
+  const panel = document.getElementById('mainPanel');
+  map.fitBounds(bounds, { paddingTopLeft:[40, 70], paddingBottomRight:[40, panel.offsetHeight + 30] });
+}
+
 async function route() {
   const { from, to } = points;
   const url = `/osrm/route/v1/driving/${from.lon},${from.lat};${to.lon},${to.lat}?overview=full&geometries=geojson&steps=true`;
@@ -399,7 +404,6 @@ async function route() {
   const r = j.routes[0];
   if (routeLine) map.removeLayer(routeLine);
   routeLine = L.geoJSON(r.geometry, { style:{ color:'#c8553d', weight:6, opacity:.9, lineCap:'round' } }).addTo(map);
-  map.fitBounds(routeLine.getBounds(), { padding:[40, 40], paddingBottomRight:[40, 320] });
 
   const km = r.distance / 1000, min = Math.round(r.duration / 60);
   quote = null;
@@ -410,6 +414,7 @@ async function route() {
     .map(s => `<li>${stepText(s)} <span style="color:#999">${s.distance > 0 ? Math.round(s.distance) + ' м' : ''}</span></li>`).join('');
   document.getElementById('info').style.display = 'block';
   document.getElementById('go').style.display = 'none';
+  fitAbovePanel(routeLine.getBounds());
 }
 </script>
 </body>

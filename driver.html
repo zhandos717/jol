@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Такси Водитель</title>
+<title>Jol Водитель</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <link rel="stylesheet" href="app.css">
@@ -28,7 +28,7 @@
   .accept { background:#30d158; color:#fff; position:relative; overflow:hidden; }
   .accept .bar { position:absolute; left:0; bottom:0; height:4px; background:rgba(255,255,255,.6); }
   .sim { display:flex; align-items:center; justify-content:space-between; color:var(--muted); font-size:13px; padding:10px 6px 2px; }
-  .nav-link { display:block; text-align:center; color:var(--blue); font-size:15px; padding:10px; text-decoration:none; }
+  .nav-link { display:block; text-align:center; color:var(--brand); font-size:15px; padding:10px; text-decoration:none; }
   .center { text-align:center; padding:8px 0 4px; }
 </style>
 </head>
@@ -135,7 +135,7 @@ async function showRoute(to, color) {
   const path = await osrm(pos, to);
   L.polyline(path, { color, weight:6, opacity:.9, lineCap:'round' }).addTo(routeLayer);
   L.marker([to.lat, to.lon], { icon:L.divIcon({ className:'', iconSize:[28, 28], html:`<div class="end-pin" style="background:${color}"></div>` }) }).addTo(routeLayer);
-  map.fitBounds(L.latLngBounds(path), { padding:[60, 40], paddingBottomRight:[40, 340] });
+  map.fitBounds(L.latLngBounds(path), { paddingTopLeft:[40, 80], paddingBottomRight:[40, document.querySelector('.panel').offsetHeight + 30] });
   simulate(path);
 }
 
