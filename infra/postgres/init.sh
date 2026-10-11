@@ -3,7 +3,7 @@
 # and cannot read another service's tables. Runs once, on an empty data volume.
 set -eu
 
-for svc in accounts dispatch intercity; do
+for svc in accounts dispatch intercity food; do
   psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<SQL
 CREATE ROLE ${svc} LOGIN PASSWORD '${SERVICE_DB_PASSWORD}';
 CREATE SCHEMA ${svc} AUTHORIZATION ${svc};

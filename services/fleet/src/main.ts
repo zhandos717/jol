@@ -61,7 +61,12 @@ await runService(z.object({}), async ({ config, log, bus, onShutdown }) => {
 
   http.post('/api/driver/offline', async req => {
     const { id } = z.object({ id: Id }).parse(req.body);
-    if (registry.servingClient(id)) throw conflict('Сначала завершите заказ');
+    if (registry.servingClient(id)) {
+      // The local flag lags dispatch by one event; ask the source of truth before refusing.
+      const { order } = await bus.request('dispatch.snapshot', { role: 'driver', id });
+      if (order) throw conflict('Сначала завершите заказ');
+      registry.setServing(id, null);
+    }
     if (registry.goOffline(id)) void publishBestEffort(makeEvent('jol.fleet.driver.offline', { driverId: id }));
     return { ok: true };
   });

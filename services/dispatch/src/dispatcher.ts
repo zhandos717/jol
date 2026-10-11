@@ -116,7 +116,7 @@ export class Dispatcher {
     };
     this.offers.set(orderId, offer);
     this.bus.notify('driver', offer.driverId, 'offer', { ...toView(order, 'driver', offer), pickupKm: offer.pickupKm });
-    this.bus.notify('client', order.clientId, 'order', toView(order, 'client', offer));
+    if (order.source === 'app') this.bus.notify('client', order.clientId, 'order', toView(order, 'client', offer));
   }
 
   private async expire(orderId: string, driverId: string) {
@@ -129,12 +129,12 @@ export class Dispatcher {
   private async giveUp(order: Order) {
     const updated = await withTx(this.pool, async tx => {
       const o = await repo.transition(tx, order.id, 'no_drivers');
-      if (o) await enqueue(tx, makeEvent('jol.dispatch.order.cancelled', { orderId: o.id, clientId: o.clientId, driverId: null, reason: 'no_drivers' }));
+      if (o) await enqueue(tx, makeEvent('jol.dispatch.order.cancelled', { orderId: o.id, clientId: o.clientId, driverId: null, source: o.source, reason: 'no_drivers' }));
       return o;
     });
     if (!updated) return;
     this.relay.kick();
-    this.bus.notify('client', updated.clientId, 'order', toView(updated, 'client'));
+    if (updated.source === 'app') this.bus.notify('client', updated.clientId, 'order', toView(updated, 'client'));
   }
 
   shutdown() {

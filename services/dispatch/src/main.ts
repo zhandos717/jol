@@ -59,7 +59,7 @@ const RateBody = z.object({
 
 const tooManyAttempts = () => new DomainError(429, 'too_many_attempts', 'Слишком много неверных кодов. Свяжитесь с отправителем');
 
-const ref = (o: Order) => ({ orderId: o.id, clientId: o.clientId, driverId: o.driverId });
+const ref = (o: Order) => ({ orderId: o.id, clientId: o.clientId, driverId: o.driverId, source: o.source });
 
 await runService(DatabaseConfig, async ({ config, log, bus, onShutdown }) => {
   const pool = createPool(config.DATABASE_URL, config.DB_SCHEMA);
@@ -73,7 +73,7 @@ await runService(DatabaseConfig, async ({ config, log, bus, onShutdown }) => {
 
   const broadcast = (o: Order) => {
     const offer = dispatcher.offerFor(o.id);
-    bus.notify('client', o.clientId, 'order', toView(o, 'client', offer));
+    if (o.source === 'app') bus.notify('client', o.clientId, 'order', toView(o, 'client', offer));
     if (o.driverId) bus.notify('driver', o.driverId, 'order', toView(o, 'driver', offer));
   };
 
@@ -126,34 +126,48 @@ await runService(DatabaseConfig, async ({ config, log, bus, onShutdown }) => {
    * Retried taps (double click, flaky mobile network) carry the same Idempotency-Key and get the
    * original order back with 200. Different taps while an order is active get 409.
    */
-  http.post('/api/orders', async req => {
-    const b = CreateOrder.parse(req.body);
-    const key = IdempotencyKey.parse(req.headers['idempotency-key'] ?? null);
-    const replay = async () => {
-      const existing = key && (await repo.findByIdempotencyKey(pool, b.clientId, key));
-      return existing ? toView(existing, 'client', dispatcher.offerFor(existing.id)) : null;
-    };
+  interface NewOrder {
+    clientId: string;
+    tariff: z.infer<typeof TariffId>;
+    from: z.infer<typeof GeoPoint>;
+    to: z.infer<typeof GeoPoint>;
+    fromLabel: string;
+    toLabel: string;
+    loaders: number;
+    cargoNote: string;
+    departAt: number | null;
+    quoteId: string | null;
+    delivery?: Omit<z.infer<typeof Delivery>, 'code'>;
+  }
+
+  /**
+   * Single creation path for app orders and service-requested deliveries.
+   * Retries with the same idempotency key return the original order.
+   */
+  const createOrder = async (b: NewOrder, source: repo.OrderSource, key: string | null): Promise<Order> => {
+    const replay = () => (key ? repo.findByIdempotencyKey(pool, b.clientId, key) : Promise.resolve(null));
     const previous = await replay();
     if (previous) return previous;
-    if (await repo.activeFor(pool, 'client', b.clientId)) throw conflict('У вас уже есть активный заказ');
-    const departAt = b.departAt ? Date.parse(b.departAt) : null;
-    if (departAt && departAt < Date.now() - 60_000) throw badRequest('Время выезда в прошлом');
+    if (source === 'app' && (await repo.activeFor(pool, 'client', b.clientId))) throw conflict('У вас уже есть активный заказ');
+    if (b.departAt && b.departAt < Date.now() - 60_000) throw badRequest('Время выезда в прошлом');
+
+    const isCargo = TARIFF_KIND[b.tariff] === 'cargo';
+    const isCourier = TARIFF_KIND[b.tariff] === 'courier';
+    if (isCourier && !b.delivery) throw badRequest('Укажите получателя и что везём');
 
     const [quote, rider] = await Promise.all([
-      bus.request('pricing.price', { from: b.from, to: b.to, tariff: b.tariff, loaders: b.loaders, quoteId: b.quoteId ?? null }),
+      bus.request('pricing.price', { from: b.from, to: b.to, tariff: b.tariff, loaders: b.loaders, quoteId: b.quoteId }),
       bus.request('accounts.rider.card', { id: b.clientId }).catch(err => {
         log.warn({ err }, 'accounts unavailable, ordering with default rider card');
         return { id: b.clientId, rating: 5, trips: 0 };
       }),
     ]);
-    const isCargo = TARIFF_KIND[b.tariff] === 'cargo';
-    const isCourier = TARIFF_KIND[b.tariff] === 'courier';
-    if (isCourier && !b.delivery) throw badRequest('Укажите получателя и что везём');
-    const scheduled = departAt !== null && departAt - SCHEDULE_LEAD_MS > Date.now();
+    const scheduled = b.departAt !== null && b.departAt - SCHEDULE_LEAD_MS > Date.now();
 
     const created = await withTx(pool, async tx => {
       const o = await repo.insert(tx, {
         id: randomUUID(),
+        source,
         clientId: b.clientId,
         driverId: null,
         tariff: b.tariff,
@@ -169,7 +183,7 @@ await runService(DatabaseConfig, async ({ config, log, bus, onShutdown }) => {
         loaders: isCargo ? b.loaders : 0,
         cargoNote: isCargo ? b.cargoNote : '',
         delivery: isCourier && b.delivery ? { ...b.delivery, code: newDeliveryCode() } : null,
-        departAt,
+        departAt: b.departAt,
         declined: [],
         driver: null,
         client: { rating: rider.rating, trips: rider.trips },
@@ -183,14 +197,48 @@ await runService(DatabaseConfig, async ({ config, log, bus, onShutdown }) => {
     }).catch(async err => {
       if ((err as { code?: string }).code !== '23505') throw err;
       const raced = await replay();
-      if (raced) return null;
+      if (raced) return raced;
       throw conflict('У вас уже есть активный заказ');
     });
-    if (!created) return (await replay())!;
-    const order = created;
     relay.kick();
-    if (order.status === 'searching') void dispatcher.run(order.id);
-    return toView(order, 'client');
+    if (created.status === 'searching' && !dispatcher.offerFor(created.id)) void dispatcher.run(created.id);
+    return created;
+  };
+
+  /**
+   * Retried taps (double click, flaky mobile network) carry the same Idempotency-Key and get the
+   * original order back with 200. Different taps while an order is active get 409.
+   */
+  http.post('/api/orders', async req => {
+    const b = CreateOrder.parse(req.body);
+    const key = IdempotencyKey.parse(req.headers['idempotency-key'] ?? null);
+    const order = await createOrder(
+      { ...b, departAt: b.departAt ? Date.parse(b.departAt) : null, quoteId: b.quoteId ?? null },
+      'app',
+      key,
+    );
+    return toView(order, 'client', dispatcher.offerFor(order.id));
+  });
+
+  bus.serve('dispatch.delivery.request', async r => {
+    const order = await createOrder(
+      {
+        clientId: r.clientId,
+        tariff: r.tariff,
+        from: r.from,
+        to: r.to,
+        fromLabel: r.from.label,
+        toLabel: r.to.label,
+        loaders: 0,
+        cargoNote: '',
+        departAt: null,
+        quoteId: null,
+        delivery: r.delivery,
+      },
+      'food',
+      r.externalId,
+    );
+    return toView(order, 'client', dispatcher.offerFor(order.id));
   });
 
   http.post('/api/orders/:id/cancel', async req => {

@@ -9,6 +9,7 @@ const ALMATY = { lat: 43.238, lon: 76.889 };
 const DEST = { lat: 43.25, lon: 76.92 };
 
 async function api(path, body, headers = {}) {
+  if (path === '/api/driver/online' && body?.id) onlineDrivers.add(body.id);
   const res = await fetch(BASE + path, body ? { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) } : {});
   const data = await res.json().catch(() => ({}));
   return { status: res.status, data };
@@ -65,6 +66,12 @@ async function eventually(fn, ms = 10_000) {
     await new Promise(r => setTimeout(r, 300));
   }
 }
+
+/** Every driver a run puts online is taken offline at the end, even on failure, so runs never leak into each other. */
+const onlineDrivers = new Set();
+const cleanup = async () => {
+  for (const id of onlineDrivers) await api('/api/driver/offline', { id }).catch(() => {});
+};
 
 const step = async (name, fn) => {
   const t = Date.now();
@@ -235,6 +242,56 @@ try {
     }
   });
 
+  await step('food: restaurant accepts → food books a courier in dispatch → PIN handover → delivered', async () => {
+    const courierId = `e2e-food-cour-${run}`;
+    const eaterId = `e2e-eater-${run}`;
+    const rest = (await ok(`/api/food/restaurants?lat=${ALMATY.lat}&lon=${ALMATY.lon}`)).find(r => r.id === 'napoli-almaty');
+    const menu = (await ok(`/api/food/restaurants/${rest.id}`)).menu;
+    const courierStream = stream('driver', courierId);
+    const eaterStream = stream('client', eaterId);
+    const restStream = stream('restaurant', rest.id);
+    try {
+      await ok('/api/driver/online', { id: courierId, name: 'Велокурьер', car: 'Велосипед', plate: '—', tariff: 'courier_bike', lat: rest.lat + 0.002, lon: rest.lon });
+      const tampered = await api('/api/food/orders', {
+        clientId: eaterId, restaurantId: rest.id, items: [{ itemId: 'st-phila', qty: 1 }],
+        to: { lat: 43.2465, lon: 76.95, label: 'ул. Жибек Жолы, 50' }, recipientName: 'Ерлан', recipientPhone: '+7 702 000 00 00',
+      });
+      assert.equal(tampered.status, 400, 'items from another restaurant must be rejected');
+
+      const key = randomUUID();
+      const body = {
+        clientId: eaterId, restaurantId: rest.id,
+        items: [{ itemId: menu[0].id, qty: 2 }, { itemId: menu[4].id, qty: 1 }],
+        to: { lat: 43.2465, lon: 76.95, label: 'ул. Жибек Жолы, 50' }, recipientName: 'Ерлан', recipientPhone: '+7 702 000 00 00',
+      };
+      const [placed, again] = await Promise.all([api('/api/food/orders', body, { 'idempotency-key': key }), api('/api/food/orders', body, { 'idempotency-key': key })]);
+      assert.equal(placed.data.id, again.data.id, 'same tap must not create two food orders');
+      const food = placed.data;
+      assert.equal(food.itemsTotal, menu[0].price * 2 + menu[4].price);
+      assert.equal(food.total, food.itemsTotal + food.deliveryFee);
+      await restStream.until('food', f => f.id === food.id && f.status === 'placed');
+
+      await ok(`/api/food/orders/${food.id}/accept`, { restaurantId: rest.id });
+      const offer = await courierStream.until('offer', o => o.from.lat === rest.lat);
+      assert.equal(offer.delivery.code, null);
+      const withCode = await eaterStream.until('food', f => f.id === food.id && f.deliveryCode);
+      await ok(`/api/orders/${offer.id}/accept`, { driverId: courierId });
+      await eaterStream.until('food', f => f.id === food.id && f.courier?.name === 'Велокурьер');
+      await ok(`/api/food/orders/${food.id}/ready`, { restaurantId: rest.id });
+      await ok(`/api/orders/${offer.id}/arrived`, { driverId: courierId });
+      await ok(`/api/orders/${offer.id}/start`, { driverId: courierId });
+      await eaterStream.until('food', f => f.id === food.id && f.status === 'delivering');
+      await ok(`/api/orders/${offer.id}/finish`, { driverId: courierId, code: withCode.deliveryCode });
+      const delivered = await eaterStream.until('food', f => f.id === food.id && f.status === 'delivered');
+      assert.equal(delivered.deliveryCode, withCode.deliveryCode);
+      await ok('/api/driver/offline', { id: courierId });
+    } finally {
+      courierStream.close();
+      eaterStream.close();
+      restStream.close();
+    }
+  });
+
   await step('driver goes offline', async () => {
     await ok('/api/driver/offline', { id: driverId });
   });
@@ -246,4 +303,5 @@ try {
 } finally {
   dStream.close();
   cStream.close();
+  await cleanup();
 }

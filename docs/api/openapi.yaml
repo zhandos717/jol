@@ -14,6 +14,7 @@ tags:
   - { name: fleet, description: Водители на линии (сервис fleet) }
   - { name: accounts, description: Профили и статистика (сервис accounts) }
   - { name: intercity, description: Рейсы с попутчиками (сервис intercity) }
+  - { name: food, description: Рестораны и доставка еды (сервис food) }
   - { name: realtime, description: Поток событий (сервис realtime) }
 
 paths:
@@ -82,6 +83,11 @@ paths:
                 loaders: { type: integer, minimum: 0, maximum: 4, description: Только для грузовых тарифов }
                 cargoNote: { type: string, maxLength: 300 }
                 departAt: { type: string, format: date-time, description: Для заказа на время }
+                delivery:
+                  type: object
+                  description: Обязательно для курьерских тарифов
+                  required: [recipientName, recipientPhone, item]
+                  properties: { recipientName: { type: string }, recipientPhone: { type: string }, item: { type: string } }
       responses:
         '200': { description: Заказ, content: { application/json: { schema: { $ref: '#/components/schemas/Order' } } } }
         '400': { $ref: '#/components/responses/Error' }
@@ -104,11 +110,12 @@ paths:
         `accept` — только водитель, которому сейчас предложен заказ.
         `decline` — отказаться от предложения.
         `arrived` → `start` → `finish` — по порядку.
+        Для курьерской доставки `finish` требует `code` — 4-значный код от получателя; после 5 неверных попыток — 429.
       parameters:
         - { $ref: '#/components/parameters/orderId' }
         - { name: action, in: path, required: true, schema: { type: string, enum: [accept, decline, arrived, start, finish] } }
-      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [driverId], properties: { driverId: { $ref: '#/components/schemas/Id' } } } } } }
-      responses: { '200': { $ref: '#/components/responses/Order' }, '403': { $ref: '#/components/responses/Error' }, '409': { $ref: '#/components/responses/Error' } }
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [driverId], properties: { driverId: { $ref: '#/components/schemas/Id' }, code: { type: string, pattern: '^\\d{4}$' } } } } } }
+      responses: { '200': { $ref: '#/components/responses/Order' }, '400': { description: Неверный код получателя }, '403': { $ref: '#/components/responses/Error' }, '409': { $ref: '#/components/responses/Error' }, '429': { description: Слишком много неверных кодов } }
 
   /api/orders/{id}/rate:
     post:
@@ -275,13 +282,100 @@ paths:
             schema: { type: object, required: [driverId, status], properties: { driverId: { $ref: '#/components/schemas/Id' }, status: { type: string, enum: [departed, done, cancelled] } } }
       responses: { '200': { $ref: '#/components/responses/Trip' }, '409': { $ref: '#/components/responses/Error' } }
 
+  /api/food/restaurants:
+    get:
+      tags: [food]
+      summary: Рестораны, открытые сначала, по расстоянию
+      parameters: [{ $ref: '#/components/parameters/lat' }, { $ref: '#/components/parameters/lon' }]
+      responses: { '200': { description: Рестораны, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Restaurant' } } } } } }
+
+  /api/food/restaurants/{id}:
+    get:
+      tags: [food]
+      summary: Ресторан с меню
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200':
+          description: Ресторан
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Restaurant'
+                  - type: object
+                    properties:
+                      menu:
+                        type: array
+                        items: { type: object, properties: { id: { type: string }, category: { type: string }, name: { type: string }, description: { type: string }, price: { type: integer }, isAvailable: { type: boolean } } }
+
+  /api/food/restaurants/{id}/orders:
+    get:
+      tags: [food]
+      summary: Активные заказы ресторана (панель ресторана)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: Заказы, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/FoodOrder' } } } } } }
+
+  /api/food/restaurants/{id}/open:
+    post:
+      tags: [food]
+      summary: Открыть или закрыть приём заказов
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [isOpen], properties: { isOpen: { type: boolean } } } } } }
+      responses: { '200': { description: OK } }
+
+  /api/food/orders:
+    get:
+      tags: [food]
+      summary: Активные и недавние заказы клиента
+      parameters: [{ name: clientId, in: query, required: true, schema: { $ref: '#/components/schemas/Id' } }]
+      responses: { '200': { description: Заказы, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/FoodOrder' } } } } } }
+    post:
+      tags: [food]
+      summary: Заказать еду; цены берутся из меню на сервере
+      parameters:
+        - { name: Idempotency-Key, in: header, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [clientId, restaurantId, items, to, recipientName, recipientPhone]
+              properties:
+                clientId: { $ref: '#/components/schemas/Id' }
+                restaurantId: { type: string }
+                items: { type: array, items: { type: object, properties: { itemId: { type: string }, qty: { type: integer, minimum: 1, maximum: 20 } } } }
+                to: { $ref: '#/components/schemas/Place' }
+                recipientName: { type: string }
+                recipientPhone: { type: string }
+                comment: { type: string, maxLength: 300 }
+      responses: { '200': { description: Заказ, content: { application/json: { schema: { $ref: '#/components/schemas/FoodOrder' } } } }, '400': { $ref: '#/components/responses/Error' }, '409': { description: Ресторан закрыт } }
+
+  /api/food/orders/{id}/{action}:
+    post:
+      tags: [food]
+      summary: Действие ресторана — accept (бронирует курьера), reject, ready
+      parameters:
+        - { $ref: '#/components/parameters/orderId' }
+        - { name: action, in: path, required: true, schema: { type: string, enum: [accept, reject, ready] } }
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [restaurantId], properties: { restaurantId: { type: string } } } } } }
+      responses: { '200': { description: Заказ, content: { application/json: { schema: { $ref: '#/components/schemas/FoodOrder' } } } }, '409': { $ref: '#/components/responses/Error' } }
+
+  /api/food/orders/{id}/cancel:
+    post:
+      tags: [food]
+      summary: Клиент отменяет заказ, пока ресторан не принял
+      parameters: [{ $ref: '#/components/parameters/orderId' }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [clientId], properties: { clientId: { $ref: '#/components/schemas/Id' } } } } } }
+      responses: { '200': { description: Заказ }, '409': { description: Ресторан уже готовит } }
+
   /api/events:
     get:
       tags: [realtime]
       summary: Поток Server-Sent Events
-      description: 'События: `order`, `offer`, `offer_expired`, `driver_location`, `trip`. При подключении приходит снимок активного заказа.'
+      description: 'События: `order`, `offer`, `offer_expired`, `driver_location`, `trip`, `food`. При подключении приходит снимок активного заказа.'
       parameters:
-        - { name: role, in: query, required: true, schema: { type: string, enum: [client, driver] } }
+        - { name: role, in: query, required: true, schema: { type: string, enum: [client, driver, restaurant] } }
         - { name: id, in: query, required: true, schema: { $ref: '#/components/schemas/Id' } }
       responses: { '200': { description: text/event-stream, content: { text/event-stream: { schema: { type: string } } } } }
 
@@ -298,7 +392,26 @@ components:
   schemas:
     Error: { type: object, properties: { error: { type: string } } }
     Id: { type: string, pattern: '^[A-Za-z0-9_-]{1,64}$' }
-    Tariff: { type: string, enum: [eco, comfort, business, cargo_s, cargo_m, cargo_l, intercity] }
+    Tariff: { type: string, enum: [eco, comfort, business, cargo_s, cargo_m, cargo_l, intercity, courier_foot, courier_bike, courier_car] }
+    Restaurant:
+      type: object
+      properties: { id: { type: string }, name: { type: string }, cuisine: { type: string }, address: { type: string }, lat: { type: number }, lon: { type: number }, prepMinutes: { type: integer }, isOpen: { type: boolean }, distanceKm: { type: [number, 'null'] } }
+    FoodOrder:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [placed, cooking, ready, delivering, delivered, rejected, cancelled] }
+        restaurant: { type: object, properties: { id: { type: string }, name: { type: string }, address: { type: string } } }
+        items: { type: array, items: { type: object, properties: { itemId: { type: string }, name: { type: string }, price: { type: integer }, qty: { type: integer } } } }
+        itemsTotal: { type: integer }
+        deliveryFee: { type: integer }
+        total: { type: integer }
+        to: { $ref: '#/components/schemas/Place' }
+        courier: { type: [object, 'null'], properties: { name: { type: string }, rating: { type: number }, tariff: { type: string } } }
+        courierSearching: { type: boolean }
+        deliveryCode: { type: [string, 'null'], description: Только клиенту }
+        etaMinutes: { type: integer }
+        cancelReason: { type: [string, 'null'] }
     Point: { type: object, required: [lat, lon], properties: { lat: { type: number }, lon: { type: number } } }
     Place: { allOf: [{ $ref: '#/components/schemas/Point' }, { type: object, properties: { label: { type: string } } }] }
     Route: { type: object, required: [from, to], properties: { from: { $ref: '#/components/schemas/Point' }, to: { $ref: '#/components/schemas/Point' } } }
@@ -328,6 +441,9 @@ components:
         surge: { type: number }
         loaders: { type: integer }
         cargoNote: { type: string }
+        delivery:
+          type: [object, 'null']
+          properties: { recipientName: { type: string }, recipientPhone: { type: string }, item: { type: string }, code: { type: [string, 'null'], description: Только отправителю } }
         departAt: { type: [integer, 'null'] }
         offerTo: { type: [string, 'null'] }
         offerExpiresAt: { type: [integer, 'null'] }
