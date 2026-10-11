@@ -4,7 +4,7 @@ import { createHttp, decodeJson, runService } from '@jol/kit';
 import { SSE_PING, sseFrame } from './sse.js';
 
 const PING_EVERY_MS = 20_000;
-const Query = z.object({ role: z.enum(['client', 'driver']), id: Id });
+const Query = z.object({ role: z.enum(['client', 'driver', 'restaurant']), id: Id });
 
 /**
  * Edge for push updates. Stateless: each open stream is a NATS subscription on `notify.<role>.<id>`,
@@ -34,7 +34,7 @@ await runService(z.object({}), async ({ config, log, bus, onShutdown }) => {
       }
     })();
 
-    try {
+    if (role !== 'restaurant') try {
       const snap = await bus.request('dispatch.snapshot', { role, id });
       if (snap.order) res.write(sseFrame('order', snap.order));
       if (snap.offer) res.write(sseFrame('offer', snap.offer));

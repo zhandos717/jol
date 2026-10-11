@@ -28,15 +28,21 @@
   </div>
   <button class="cta go" id="go">Построить маршрут</button>
   <button class="link-btn" id="openTrips">Межгород с попутчиками — от 1 места ›</button>
+  <a class="link-btn" href="food.html" style="text-decoration:none;text-align:center">Еда из ресторанов ›</a>
   <div class="info" id="info">
     <div class="meta" id="meta"></div>
-    <div class="segment" id="segment"><button data-g="taxi" class="active">Такси</button><button data-g="cargo">Грузовое</button><button data-g="intercity">Межгород</button></div>
+    <div class="segment" id="segment"><button data-g="taxi" class="active">Такси</button><button data-g="cargo">Грузовое</button><button data-g="intercity">Межгород</button><button data-g="courier">Доставка</button></div>
     <div class="surge" id="surge"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg><div><b id="surgeK"></b> · Высокий спрос рядом<div style="opacity:.8">Цена выше обычной, чтобы машина нашлась быстрее</div></div></div>
     <div class="tariffs" id="tariffs"></div>
     <div class="cargo-opts" id="cargoOpts">
       <div class="opt"><div>Грузчики<div class="sub" id="loaderPrice"></div></div>
         <div class="stepper"><button id="ldMinus">−</button><b id="loaders">0</b><button id="ldPlus">+</button></div></div>
       <input id="cargoNote" maxlength="300" placeholder="Что везём? Этаж, лифт, габариты">
+    </div>
+    <div class="cargo-opts" id="courierOpts">
+      <input id="dItem" maxlength="200" placeholder="Что везём: документы, ключи, коробка до 5 кг">
+      <input id="dName" maxlength="60" placeholder="Имя получателя">
+      <input id="dPhone" maxlength="20" inputmode="tel" placeholder="Телефон получателя, +7 700 000 00 00">
     </div>
     <div class="cargo-opts" id="icOpts">
       <div class="opt"><div>Когда<div class="sub">Пусто — прямо сейчас</div></div><input type="datetime-local" id="departAt" style="width:auto;border:none;padding:0;text-align:right"></div>
@@ -164,6 +170,7 @@ function renderTariffs() {
       <div class="pr">${quote ? (quote.prices[t.id] + (g === 'cargo' ? loaders * lp : 0)).toLocaleString('ru') + ' ₸' : '…'}</div></div>`).join('');
   document.getElementById('cargoOpts').style.display = g === 'cargo' ? 'block' : 'none';
   document.getElementById('icOpts').style.display = g === 'intercity' ? 'block' : 'none';
+  document.getElementById('courierOpts').style.display = g === 'courier' ? 'block' : 'none';
   const surge = g === 'taxi' && quote?.surge > 1 ? quote.surge : 0;
   document.getElementById('surge').style.display = surge ? 'flex' : 'none';
   document.getElementById('surgeK').textContent = surge ? `×${surge.toFixed(1)}` : '';
@@ -238,8 +245,10 @@ function applyOrder(o) {
   btn.textContent = rideActive ? 'Отменить' : 'Заказать';
   btn.classList.toggle('cancel', rideActive);
   if (o.driver) moveCar(o.driver);
+  document.getElementById('mainPanel').classList.toggle('riding', rideActive);
 
   const d = o.driver, car = d && `<b>${esc(d.car)}</b> · ${esc(d.plate)}`;
+  if (o.delivery) return applyDelivery(o, d);
   switch (o.status) {
     case 'scheduled':
       showStatus(`<b>Заказ на ${fmtDate(o.departAt)}</b><div class="sub">Начнём искать водителя за 30 минут до выезда · ${o.price.toLocaleString('ru')} ₸</div>`, false);
@@ -267,6 +276,32 @@ function applyOrder(o) {
     case 'no_drivers': showStatus('<b>Свободных машин нет</b><div class="sub">Попробуйте другой тариф или чуть позже</div>', false); break;
   }
   if (!rideActive && carMarker) { map.removeLayer(carMarker); carMarker = null; }
+}
+
+function applyDelivery(o, d) {
+  const code = o.delivery.code && ['searching', 'accepted', 'arrived', 'in_progress'].includes(o.status)
+    ? `<div class="pin-code">Код для получателя <b>${esc(o.delivery.code)}</b><span>Курьер отдаст посылку только по этому коду</span></div>` : '';
+  const who = d ? `${esc(d.name)} ${fmtRating(d.rating)}` : '';
+  switch (o.status) {
+    case 'searching':
+      return showStatus(`Ищем курьера «${tariffOf(o.tariff).nm}»…<div class="sub">${esc(o.delivery.item)}</div>${code}`);
+    case 'accepted':
+      return showStatus(`<b>Курьер едет за посылкой</b><div class="sub">${who}</div>${code}`, false);
+    case 'arrived':
+      return showStatus(`<b>Курьер на месте</b><div class="sub">Передайте посылку · ${who}</div>${code}`, false);
+    case 'in_progress':
+      return showStatus(`<b>Курьер везёт посылку</b><div class="sub">${esc(o.delivery.recipientName)} · ${o.price} ₸</div>${code}`, false);
+    case 'done':
+      showStatus('', false);
+      return ratingWidget(document.getElementById('statusText'), {
+        title:`Посылка доставлена<div class="sub">${esc(o.delivery.recipientName)} получил(а) её по коду</div>`,
+        good:['Быстро', 'Вежливый', 'Аккуратно', 'На связи'],
+        bad:['Опоздал', 'Повредил посылку', 'Грубость', 'Не отвечал'],
+        onSubmit:(stars, tags) => api(`/api/orders/${o.id}/rate`, { by:'client', id:clientId, stars, tags }),
+      });
+    case 'cancelled': return showStatus('Доставка отменена', false);
+    case 'no_drivers': return showStatus('<b>Свободных курьеров нет</b><div class="sub">Попробуйте другой способ доставки</div>', false);
+  }
 }
 
 const events = new EventSource(`/api/events?role=client&id=${clientId}`);
@@ -299,11 +334,17 @@ document.getElementById('order').onclick = async () => {
       return;
     }
     if (!points.from || !points.to) return alert('Укажите откуда и куда');
+    const delivery = tariff.group === 'courier' ? {
+      item:document.getElementById('dItem').value.trim(),
+      recipientName:document.getElementById('dName').value.trim(),
+      recipientPhone:document.getElementById('dPhone').value.trim(),
+    } : undefined;
+    if (delivery && (!delivery.item || !delivery.recipientName || !delivery.recipientPhone)) return alert('Укажите, что везём, и имя с телефоном получателя');
     showStatus('Создаём заказ…');
     applyOrder(await placeOrder({
       clientId, tariff:tariff.id, from:points.from, to:points.to, quoteId:quote?.quoteId,
       fromLabel:document.getElementById('from').value, toLabel:document.getElementById('to').value,
-      loaders, cargoNote:document.getElementById('cargoNote').value,
+      loaders, cargoNote:document.getElementById('cargoNote').value, delivery,
       departAt:tariff.group === 'intercity' && document.getElementById('departAt').value ? new Date(document.getElementById('departAt').value).toISOString() : null,
     }));
   } catch (e) {

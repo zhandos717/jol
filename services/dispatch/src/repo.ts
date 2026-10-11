@@ -1,11 +1,14 @@
-import type { DriverView, GeoPoint, OrderStatus, Review, RiderCard, TariffId } from '@jol/contracts';
+import type { Delivery, DriverView, GeoPoint, OrderStatus, Review, RiderCard, TariffId } from '@jol/contracts';
 import type { DbClient, Pool } from '@jol/kit';
 import { sourcesOf } from './state.js';
 
 type Queryable = Pool | DbClient;
 
+export type OrderSource = 'app' | 'food';
+
 export interface Order {
   id: string;
+  source: OrderSource;
   clientId: string;
   driverId: string | null;
   tariff: TariffId;
@@ -20,6 +23,7 @@ export interface Order {
   surge: number;
   loaders: number;
   cargoNote: string;
+  delivery: Delivery | null;
   departAt: number | null;
   declined: string[];
   driver: DriverView | null;
@@ -32,6 +36,7 @@ export interface Order {
 
 interface Row {
   id: string;
+  source: OrderSource;
   client_id: string;
   driver_id: string | null;
   tariff: TariffId;
@@ -48,6 +53,7 @@ interface Row {
   surge: string;
   loaders: number;
   cargo_note: string;
+  delivery: Delivery | null;
   depart_at: Date | null;
   declined: string[];
   driver_snapshot: DriverView | null;
@@ -62,6 +68,7 @@ const ms = (d: Date | null) => (d ? d.getTime() : null);
 
 const fromRow = (r: Row): Order => ({
   id: r.id,
+  source: r.source,
   clientId: r.client_id,
   driverId: r.driver_id,
   tariff: r.tariff,
@@ -76,6 +83,7 @@ const fromRow = (r: Row): Order => ({
   surge: Number(r.surge),
   loaders: r.loaders,
   cargoNote: r.cargo_note,
+  delivery: r.delivery,
   departAt: ms(r.depart_at),
   declined: r.declined,
   driver: r.driver_snapshot,
@@ -106,13 +114,14 @@ export async function findByIdempotencyKey(db: Queryable, clientId: string, key:
 export async function insert(db: Queryable, o: Order, idempotencyKey: string | null = null): Promise<Order> {
   const { rows } = await db.query<Row>(
     `INSERT INTO orders (id, client_id, tariff, status, from_lat, from_lon, to_lat, to_lon, from_label, to_label,
-       km, min, price, surge, loaders, cargo_note, depart_at, client_snapshot, search_started_at, idempotency_key)
+       km, min, price, surge, loaders, cargo_note, depart_at, client_snapshot, search_started_at, idempotency_key, delivery, source)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, to_timestamp($17 / 1000.0), $18,
-       CASE WHEN $4 = 'searching' THEN now() END, $19)
+       CASE WHEN $4 = 'searching' THEN now() END, $19, $20, $21)
      RETURNING *`,
     [
       o.id, o.clientId, o.tariff, o.status, o.from.lat, o.from.lon, o.to.lat, o.to.lon, o.fromLabel, o.toLabel,
       o.km, o.min, o.price, o.surge, o.loaders, o.cargoNote, o.departAt, JSON.stringify(o.client), idempotencyKey,
+      o.delivery ? JSON.stringify(o.delivery) : null, o.source,
     ],
   );
   return fromRow(rows[0]!);
@@ -123,9 +132,10 @@ export async function get(db: Queryable, id: string): Promise<Order | null> {
   return rows[0] ? fromRow(rows[0]) : null;
 }
 
+/** For passengers only orders they placed themselves count: a food delivery runs alongside a taxi ride. */
 export async function activeFor(db: Queryable, role: 'client' | 'driver', id: string): Promise<Order | null> {
-  const column = role === 'client' ? 'client_id' : 'driver_id';
-  const { rows } = await db.query<Row>(`SELECT * FROM orders WHERE ${column} = $1 AND status IN ${ACTIVE} LIMIT 1`, [id]);
+  const filter = role === 'client' ? `client_id = $1 AND source = 'app'` : 'driver_id = $1';
+  const { rows } = await db.query<Row>(`SELECT * FROM orders WHERE ${filter} AND status IN ${ACTIVE} LIMIT 1`, [id]);
   return rows[0] ? fromRow(rows[0]) : null;
 }
 

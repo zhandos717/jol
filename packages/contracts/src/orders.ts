@@ -25,6 +25,15 @@ export const Review = z.object({
 });
 export type Review = z.infer<typeof Review>;
 
+/** Parcel details. `code` is the proof-of-delivery PIN: shown to the sender only, typed by the courier at handover. */
+export const Delivery = z.object({
+  recipientName: z.string().trim().min(1).max(60),
+  recipientPhone: z.string().trim().regex(/^\+?[0-9 ()-]{7,20}$/, 'Неверный телефон'),
+  item: z.string().trim().min(1).max(200),
+  code: z.string().regex(/^\d{4}$/).nullable(),
+});
+export type Delivery = z.infer<typeof Delivery>;
+
 /** Order as exposed to passenger and driver apps; the frontend contract. */
 export const OrderView = z.object({
   id: z.string().uuid(),
@@ -42,6 +51,7 @@ export const OrderView = z.object({
   surge: z.number(),
   loaders: z.number().int(),
   cargoNote: z.string(),
+  delivery: Delivery.nullable(),
   departAt: z.number().nullable(),
   offerTo: Id.nullable(),
   offerExpiresAt: z.number().nullable(),

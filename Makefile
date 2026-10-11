@@ -1,6 +1,6 @@
 COMPOSE  := docker compose
 PSQL     := $(COMPOSE) exec -T postgres psql -U jol -d jol
-SERVICES := accounts fleet pricing dispatch intercity realtime
+SERVICES := accounts fleet pricing dispatch intercity food realtime
 BACKUPS  := backups
 DRIVERS  ?= 1000
 

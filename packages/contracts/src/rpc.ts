@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { GeoPoint } from './geo.js';
-import { OrderView } from './orders.js';
+import { GeoPoint, Place } from './geo.js';
+import { Delivery, OrderView } from './orders.js';
 import { DriverAccount, DriverCard, DriverProfile, DriverView, Id, RiderCard } from './people.js';
 import { TariffId } from './tariffs.js';
 
@@ -39,6 +39,21 @@ export const Rpc = {
     response: z.object({ price: z.number().int(), surge: z.number(), km: z.number(), min: z.number() }),
   },
 
+  /**
+   * Courier delivery on behalf of another service (food). `externalId` is the caller's order id and
+   * doubles as the idempotency key, so a retried request never books a second courier.
+   */
+  'dispatch.delivery.request': {
+    request: z.object({
+      externalId: z.string().uuid(),
+      clientId: Id,
+      tariff: TariffId,
+      from: Place,
+      to: Place,
+      delivery: Delivery.omit({ code: true }),
+    }),
+    response: OrderView,
+  },
   'dispatch.assignments': {
     request: z.object({}),
     response: z.array(z.object({ driverId: Id, clientId: Id, orderId: z.string().uuid() })),

@@ -100,3 +100,9 @@ details { margin-top:8px; } summary { color:var(--muted); font-size:13px; text-a
 .surge b { font-size:15px; }
 @media (prefers-color-scheme: dark) { .surge { color:var(--brand); } }
 .surge-label { background:var(--brand); color:var(--on-brand); border-radius:100px; padding:2px 7px; font-size:12px; font-weight:700; border:2px solid #fff; white-space:nowrap; }
+.cargo-opts input + input { border-top:.5px solid rgba(128,128,128,.3); }
+.pin-code { margin-top:8px; padding:10px 12px; border-radius:16px; background:var(--brand-soft); font-size:13px; color:var(--muted); }
+.pin-code b { display:block; font-size:28px; letter-spacing:.3em; color:var(--fg); margin:2px 0; }
+.pin-code span { display:block; font-size:12px; }
+.panel.riding #segment, .panel.riding #tariffs, .panel.riding .cargo-opts, .panel.riding .surge,
+.panel.riding .link-btn, .panel.riding details { display:none !important; }

@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jol Еда</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link rel="stylesheet" href="app.css">
+<script src="rating.js"></script>
+<script src="vehicles.js"></script>
+<style>
+  body { overflow:auto; background:var(--page, #f2f2f7); }
+  @media (prefers-color-scheme: dark) { body { background:#000; } }
+  .screen { max-width:480px; margin:0 auto; padding:16px 16px 120px; }
+  .top { display:flex; align-items:center; gap:10px; margin:6px 0 14px; }
+  .top h1 { font-size:28px; margin:0; flex:1; letter-spacing:-.02em; }
+  .back { background:var(--fill); border-radius:100px; padding:8px 14px; font-size:15px; color:var(--fg); text-decoration:none; }
+  .muted { color:var(--muted); font-size:14px; }
+  .card { background:var(--glass-strong); border:.5px solid var(--stroke); border-radius:22px; padding:14px 16px; margin-bottom:10px; }
+  .rest { display:flex; gap:14px; align-items:center; cursor:pointer; }
+  .rest .logo { flex:none; width:52px; height:52px; border-radius:16px; background:var(--brand-soft); color:var(--brand-strong);
+    display:grid; place-items:center; font-weight:700; font-size:20px; }
+  .rest.closed { opacity:.5; cursor:default; }
+  .rest b { font-size:17px; }
+  .cat { font-size:13px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; margin:18px 4px 8px; }
+  .dish { display:flex; gap:12px; align-items:center; }
+  .dish .dish-text { flex:1; }
+  .dish .price { font-weight:600; margin-top:4px; }
+  .qty { display:flex; align-items:center; gap:10px; }
+  .qty button { width:34px; height:34px; border-radius:50%; background:var(--fill); font-size:18px; font-weight:600; }
+  .qty .add { width:auto; padding:0 14px; border-radius:100px; background:var(--brand); color:var(--on-brand); font-size:14px; }
+  .cartbar { position:fixed; left:16px; right:16px; bottom:16px; max-width:448px; margin:0 auto; z-index:10; }
+  .cartbar .cta { margin:0; display:flex; justify-content:space-between; padding:16px 22px; }
+  .form2 { margin-top:6px; }
+  .form2 input { box-sizing:border-box; }
+  .row { display:flex; justify-content:space-between; padding:4px 0; font-size:15px; }
+  .row.total { font-weight:700; font-size:17px; border-top:.5px solid rgba(128,128,128,.3); margin-top:6px; padding-top:10px; }
+  .sugg-box { background:var(--glass-strong); border-radius:16px; margin-top:6px; overflow:hidden; }
+  .sugg-box div { padding:10px 14px; font-size:14px; cursor:pointer; border-bottom:.5px solid rgba(128,128,128,.2); }
+  .steps-line { list-style:none; padding:0; margin:6px 0 0; }
+  .steps-line li { display:flex; gap:12px; align-items:center; padding:8px 0; color:var(--muted); font-size:15px; }
+  .steps-line li .dot { width:12px; height:12px; border-radius:50%; background:var(--fill); flex:none; }
+  .steps-line li.done { color:var(--fg); }
+  .steps-line li.done .dot { background:var(--brand); }
+  .steps-line li.now { color:var(--fg); font-weight:600; }
+  .steps-line li.now .dot { background:var(--brand); box-shadow:0 0 0 5px var(--brand-soft); }
+  #trackMap { height:220px; border-radius:22px; overflow:hidden; margin-bottom:10px; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<div class="screen" id="app"></div>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' })[c]);
+const money = n => `${Number(n).toLocaleString('ru')} ₸`;
+const store = {
+  get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+const clientId = (() => {
+  try {
+    let id = localStorage.getItem('clientId');
+    if (!id) { id = crypto.randomUUID(); localStorage.setItem('clientId', id); }
+    return id;
+  } catch { return crypto.randomUUID(); }
+})();
+
+async function api(path, body, headers = {}) {
+  const r = await fetch(path, body ? { method:'POST', headers:{ 'Content-Type':'application/json', ...headers }, body:JSON.stringify(body) } : undefined);
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || 'Ошибка сервера');
+  return j;
+}
+
+let here = { lat:43.238, lon:76.945 };
+let restaurant = null, cart = new Map(), address = store.get('foodAddress', null), active = null;
+let trackMap, courierMarker, lastCourier = null;
+
+navigator.geolocation?.getCurrentPosition(p => {
+  here = { lat:p.coords.latitude, lon:p.coords.longitude };
+  if (!active && !restaurant) showList();
+}, () => {}, { timeout:5000 });
+
+async function showList() {
+  restaurant = null;
+  const list = await api(`/api/food/restaurants?lat=${here.lat}&lon=${here.lon}`);
+  $('app').innerHTML = `<div class="top"><h1>Jol Еда</h1><a class="back" href="/">Такси</a></div>
+    <div class="muted" style="margin:0 4px 12px">Рестораны рядом с вами</div>
+    ${list.map(r => `<div class="card rest ${r.isOpen ? '' : 'closed'}" data-id="${esc(r.id)}">
+      <div class="logo">${esc(r.name[0])}</div>
+      <div><b>${esc(r.name)}</b><div class="muted">${esc(r.cuisine)} · ${r.distanceKm.toFixed(1)} км · ${r.isOpen ? `~${r.prepMinutes + Math.round(r.distanceKm * 4) + 5} мин` : 'закрыто'}</div></div>
+    </div>`).join('')}`;
+  document.querySelectorAll('.rest:not(.closed)').forEach(el => el.onclick = () => showMenu(el.dataset.id));
+}
+
+async function showMenu(id) {
+  restaurant = await api(`/api/food/restaurants/${id}`);
+  cart = new Map();
+  renderMenu();
+}
+
+function renderMenu() {
+  const r = restaurant, cats = [...new Set(r.menu.map(i => i.category))];
+  $('app').innerHTML = `<div class="top"><button class="back" id="back">‹ Назад</button><div style="flex:1"></div></div>
+    <h1 style="font-size:26px;margin:0 4px">${esc(r.name)}</h1><div class="muted" style="margin:2px 4px 6px">${esc(r.cuisine)} · ${esc(r.address)}</div>
+    ${cats.map(c => `<div class="cat">${esc(c)}</div>${r.menu.filter(i => i.category === c).map(dish).join('')}`).join('')}
+    <div class="cartbar ${cart.size ? '' : 'hidden'}"><button class="cta go" id="toCheckout"><span>Корзина · ${[...cart.values()].reduce((a, b) => a + b, 0)} шт</span><span>${money(cartTotal())}</span></button></div>`;
+  $('back').onclick = showList;
+  $('toCheckout')?.addEventListener('click', showCheckout);
+  document.querySelectorAll('[data-plus]').forEach(b => b.onclick = () => { cart.set(b.dataset.plus, (cart.get(b.dataset.plus) || 0) + 1); renderMenu(); });
+  document.querySelectorAll('[data-minus]').forEach(b => b.onclick = () => {
+    const n = (cart.get(b.dataset.minus) || 0) - 1;
+    n > 0 ? cart.set(b.dataset.minus, n) : cart.delete(b.dataset.minus);
+    renderMenu();
+  });
+}
+
+function dish(i) {
+  const n = cart.get(i.id) || 0;
+  const ctl = !i.isAvailable ? '<span class="muted">нет в наличии</span>'
+    : n ? `<div class="qty"><button data-minus="${esc(i.id)}">−</button><b>${n}</b><button data-plus="${esc(i.id)}">+</button></div>`
+    : `<div class="qty"><button class="add" data-plus="${esc(i.id)}">Добавить</button></div>`;
+  return `<div class="card dish"><div class="dish-text"><b>${esc(i.name)}</b><div class="muted">${esc(i.description)}</div><div class="price">${money(i.price)}</div></div>${ctl}</div>`;
+}
+
+const cartTotal = () => [...cart].reduce((sum, [id, n]) => sum + restaurant.menu.find(i => i.id === id).price * n, 0);
+const lines = () => [...cart].map(([id, n]) => ({ item:restaurant.menu.find(i => i.id === id), n }));
+
+async function deliveryFee() {
+  if (!address) return null;
+  try {
+    const q = await api('/api/quote', { from:{ lat:restaurant.lat, lon:restaurant.lon }, to:address });
+    return q.km <= 5 ? q.prices.courier_bike : q.prices.courier_car;
+  } catch { return null; }
+}
+
+async function showCheckout() {
+  const me = store.get('recipient', { name:'', phone:'' });
+  const fee = await deliveryFee();
+  $('app').innerHTML = `<div class="top"><button class="back" id="back">‹ Меню</button><div style="flex:1"></div></div>
+    <h1 style="font-size:26px;margin:0 4px 12px">Оформление</h1>
+    <div class="card">
+      ${lines().map(l => `<div class="row"><span>${esc(l.item.name)} × ${l.n}</span><span>${money(l.item.price * l.n)}</span></div>`).join('')}
+      <div class="row"><span>Доставка</span><span>${fee == null ? 'укажите адрес' : money(fee)}</span></div>
+      <div class="row total"><span>Итого</span><span>${money(cartTotal() + (fee || 0))}</span></div>
+    </div>
+    <div class="cat">Куда</div>
+    <div class="form2">
+      <input id="addr" placeholder="Улица и дом" value="${esc(address?.label || '')}" autocomplete="off">
+    </div>
+    <div class="sugg-box" id="sugg"></div>
+    <button class="link-btn" id="here" style="text-align:left;padding-left:6px">📍 Моё местоположение</button>
+    <div class="cat">Получатель</div>
+    <div class="form2">
+      <input id="name" placeholder="Имя" value="${esc(me.name)}">
+      <input id="phone" inputmode="tel" placeholder="Телефон, +7 700 000 00 00" value="${esc(me.phone)}">
+      <input id="comment" placeholder="Подъезд, этаж, приборы">
+    </div>
+    <div class="cartbar"><button class="cta go" id="place"><span>Заказать</span><span>${money(cartTotal() + (fee || 0))}</span></button></div>`;
+  $('back').onclick = renderMenu;
+  $('here').onclick = () => navigator.geolocation?.getCurrentPosition(async p => {
+    const lat = p.coords.latitude, lon = p.coords.longitude;
+    const j = await (await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&accept-language=ru&lat=${lat}&lon=${lon}`)).json();
+    address = { lat, lon, label:j.display_name?.split(',').slice(0, 3).join(',') || 'Моё местоположение' };
+    store.set('foodAddress', address);
+    showCheckout();
+  });
+  let t;
+  $('addr').oninput = () => {
+    clearTimeout(t);
+    const q = $('addr').value;
+    if (q.length < 3) return $('sugg').innerHTML = '';
+    t = setTimeout(async () => {
+      const res = await (await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=5&accept-language=ru&q=${encodeURIComponent(q)}&viewbox=${here.lon - 1},${here.lat + 1},${here.lon + 1},${here.lat - 1}`)).json();
+      $('sugg').innerHTML = res.map((r, i) => `<div data-i="${i}">${esc(r.display_name)}</div>`).join('');
+      $('sugg').querySelectorAll('div').forEach(el => el.onclick = () => {
+        const r = res[+el.dataset.i];
+        address = { lat:+r.lat, lon:+r.lon, label:r.display_name.split(',').slice(0, 3).join(',') };
+        store.set('foodAddress', address);
+        showCheckout();
+      });
+    }, 400);
+  };
+  $('place').onclick = placeOrder;
+}
+
+async function placeOrder() {
+  const btn = $('place');
+  if (!address) return alert('Укажите адрес доставки');
+  const name = $('name').value.trim(), phone = $('phone').value.trim();
+  if (!name || !phone) return alert('Укажите имя и телефон получателя');
+  store.set('recipient', { name, phone });
+  btn.disabled = true;
+  const key = crypto.randomUUID();
+  const body = {
+    clientId, restaurantId:restaurant.id, to:address, recipientName:name, recipientPhone:phone, comment:$('comment').value,
+    items:[...cart].map(([itemId, qty]) => ({ itemId, qty })),
+  };
+  for (let attempt = 0; ; attempt++) {
+    try {
+      active = await api('/api/food/orders', body, { 'Idempotency-Key':key });
+      return showTracking();
+    } catch (e) {
+      if (!(e instanceof TypeError) || attempt === 2) { btn.disabled = false; return alert(e instanceof TypeError ? 'Нет связи' : e.message); }
+      await new Promise(r => setTimeout(r, 500 * 2 ** attempt));
+    }
+  }
+}
+
+const STEPS = [
+  ['placed', 'Ресторан получил заказ'],
+  ['cooking', 'Готовится'],
+  ['ready', 'Упакован, ждёт курьера'],
+  ['delivering', 'Курьер в пути'],
+  ['delivered', 'Доставлен'],
+];
+
+function showTracking() {
+  const o = active, idx = STEPS.findIndex(s => s[0] === o.status);
+  const final = ['rejected', 'cancelled'].includes(o.status);
+  const courier = o.courier ? `${esc(o.courier.name)} ${fmtRating(o.courier.rating)} · ${esc(tariffOf(o.courier.tariff).nm)}` : o.courierSearching ? 'Ищем курьера…' : '';
+  $('app').innerHTML = `<div class="top"><h1 style="font-size:24px">${esc(o.restaurant.name)}</h1><button class="back" id="back">${final || o.status === 'delivered' ? 'Рестораны' : 'Ещё заказ'}</button></div>
+    <div id="trackMap"></div>
+    ${final ? `<div class="card"><b>${o.status === 'rejected' ? 'Ресторан не смог принять заказ' : o.cancelReason === 'no_courier' ? 'Не нашли курьера' : 'Заказ отменён'}</b><div class="muted">Деньги не списаны</div></div>`
+      : `<div class="card"><ul class="steps-line">${STEPS.map((s, i) => `<li class="${i < idx ? 'done' : i === idx ? 'now' : ''}"><span class="dot"></span>${s[1]}</li>`).join('')}</ul>
+        ${o.status !== 'delivered' ? `<div class="muted" style="margin-top:6px">Ориентировочно ~${o.etaMinutes} мин</div>` : ''}</div>`}
+    ${o.deliveryCode && !['delivered', 'cancelled', 'rejected'].includes(o.status) ? `<div class="pin-code">Код для курьера <b>${esc(o.deliveryCode)}</b><span>Назовите его курьеру при получении</span></div>` : ''}
+    ${courier ? `<div class="card"><span class="muted">Курьер</span><div>${courier}</div></div>` : ''}
+    <div class="card">${o.items.map(l => `<div class="row"><span>${esc(l.name)} × ${l.qty}</span><span>${money(l.price * l.qty)}</span></div>`).join('')}
+      <div class="row"><span>Доставка</span><span>${money(o.deliveryFee)}</span></div>
+      <div class="row total"><span>Итого</span><span>${money(o.total)}</span></div></div>
+    ${o.status === 'placed' ? '<button class="cta decline" id="cancel">Отменить заказ</button>' : ''}
+    <div id="rate"></div>`;
+  $('back').onclick = () => { active = null; showList(); };
+  $('cancel')?.addEventListener('click', async () => {
+    try { active = await api(`/api/food/orders/${o.id}/cancel`, { clientId }); showTracking(); } catch (e) { alert(e.message); }
+  });
+
+  trackMap?.remove();
+  trackMap = L.map('trackMap', { zoomControl:false, attributionControl:false });
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom:19 }).addTo(trackMap);
+  const pin = color => L.divIcon({ className:'', iconSize:[28, 28], html:`<div class="end-pin" style="background:${color}"></div>` });
+  L.marker([o.restaurant.lat, o.restaurant.lon], { icon:pin('#c8553d') }).addTo(trackMap);
+  L.marker([o.to.lat, o.to.lon], { icon:pin('#3a3a3c') }).addTo(trackMap);
+  trackMap.fitBounds([[o.restaurant.lat, o.restaurant.lon], [o.to.lat, o.to.lon]], { padding:[40, 40] });
+  courierMarker = null;
+  if (lastCourier) moveCourier(lastCourier);
+}
+
+function moveCourier(d) {
+  lastCourier = d;
+  if (!trackMap || !active || !['cooking', 'ready', 'delivering'].includes(active.status)) return;
+  if (!courierMarker) courierMarker = L.marker([d.lat, d.lon], { icon:L.divIcon({ className:'', html:mapIcon(d.tariff), iconSize:[28, 28] }) }).addTo(trackMap);
+  courierMarker.setLatLng([d.lat, d.lon]);
+}
+
+const events = new EventSource(`/api/events?role=client&id=${clientId}`);
+events.addEventListener('food', e => {
+  const o = JSON.parse(e.data);
+  if (active?.id === o.id) { active = o; showTracking(); }
+});
+events.addEventListener('driver_location', e => moveCourier(JSON.parse(e.data)));
+
+(async () => {
+  const mine = await api(`/api/food/orders?clientId=${clientId}`).catch(() => []);
+  const current = mine.find(o => ['placed', 'cooking', 'ready', 'delivering'].includes(o.status));
+  if (current) { active = current; showTracking(); } else showList();
+})();
+</script>
+</body>
+</html>

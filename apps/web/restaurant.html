@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jol Ресторан</title>
+<link rel="stylesheet" href="app.css">
+<script src="rating.js"></script>
+<script src="vehicles.js"></script>
+<style>
+  body { overflow:auto; background:#f2f2f7; }
+  @media (prefers-color-scheme: dark) { body { background:#000; } }
+  .screen { max-width:960px; margin:0 auto; padding:20px 16px 40px; }
+  .top { display:flex; align-items:center; gap:12px; margin-bottom:16px; flex-wrap:wrap; }
+  .top h1 { font-size:26px; margin:0; flex:1; letter-spacing:-.02em; }
+  .muted { color:var(--muted); font-size:14px; }
+  .switch { padding:10px 18px; border-radius:100px; font-weight:600; background:var(--fill); }
+  .switch.on { background:#30d158; color:#fff; }
+  .cols { display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:14px; align-items:start; }
+  .col h2 { font-size:15px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0 6px 8px; display:flex; justify-content:space-between; }
+  .ticket { background:var(--glass-strong); border:.5px solid var(--stroke); border-radius:20px; padding:14px; margin-bottom:10px; }
+  .ticket.new { box-shadow:0 0 0 2px var(--brand); }
+  .ticket .head { display:flex; justify-content:space-between; font-weight:700; }
+  .ticket ul { margin:8px 0; padding-left:18px; font-size:15px; }
+  .ticket .cta { margin-top:8px; padding:12px; font-size:15px; }
+  .ticket .row2 { display:flex; gap:8px; }
+  .ticket .row2 .cta { flex:1; }
+  .empty { color:var(--muted); text-align:center; padding:20px 0; font-size:14px; }
+  .picker a { display:block; padding:14px 16px; background:var(--glass-strong); border-radius:18px; margin-bottom:8px; color:var(--fg); text-decoration:none; }
+</style>
+</head>
+<body>
+<div class="screen" id="app"></div>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' })[c]);
+const money = n => `${Number(n).toLocaleString('ru')} ₸`;
+const rid = new URLSearchParams(location.search).get('r');
+
+async function api(path, body) {
+  const r = await fetch(path, body ? { method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify(body) } : undefined);
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || 'Ошибка сервера');
+  return j;
+}
+
+let restaurant, orders = new Map(), fresh = new Set();
+
+function beep() {
+  try {
+    const ctx = new AudioContext(), osc = ctx.createOscillator(), gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.frequency.value = 880; gain.gain.value = 0.1;
+    osc.start(); osc.stop(ctx.currentTime + 0.25);
+  } catch {}
+}
+
+const COLUMNS = [
+  ['placed', 'Новые'],
+  ['cooking', 'Готовятся'],
+  ['ready', 'Ждут курьера'],
+  ['delivering', 'У курьера'],
+];
+
+function ticket(o) {
+  const time = new Date(o.createdAt).toLocaleTimeString('ru', { hour:'2-digit', minute:'2-digit' });
+  const courier = o.courier ? `Курьер: ${esc(o.courier.name)} · ${esc(tariffOf(o.courier.tariff).nm)}` : o.courierSearching ? 'Ищем курьера…' : '';
+  const actions = {
+    placed: `<div class="row2"><button class="cta decline" data-act="reject" data-id="${o.id}">Отклонить</button><button class="cta go" data-act="accept" data-id="${o.id}">Принять</button></div>`,
+    cooking: `<button class="cta go" data-act="ready" data-id="${o.id}">Готово, упаковано</button>`,
+  }[o.status] || '';
+  return `<div class="ticket ${fresh.has(o.id) ? 'new' : ''}">
+    <div class="head"><span>№ ${o.id.slice(0, 4).toUpperCase()} · ${time}</span><span>${money(o.itemsTotal)}</span></div>
+    <ul>${o.items.map(l => `<li>${esc(l.name)} × ${l.qty}</li>`).join('')}</ul>
+    ${o.comment ? `<div class="muted">«${esc(o.comment)}»</div>` : ''}
+    ${courier ? `<div class="muted">${courier}</div>` : ''}
+    ${actions}
+  </div>`;
+}
+
+function render() {
+  const all = [...orders.values()];
+  $('app').innerHTML = `<div class="top">
+      <div style="flex:1"><h1>${esc(restaurant.name)}</h1><div class="muted">${esc(restaurant.address)}</div></div>
+      <button class="switch ${restaurant.isOpen ? 'on' : ''}" id="toggle">${restaurant.isOpen ? 'Принимаем заказы' : 'Закрыто'}</button>
+    </div>
+    <div class="cols">${COLUMNS.map(([st, title]) => {
+      const list = all.filter(o => o.status === st);
+      return `<div class="col"><h2><span>${title}</span><span>${list.length}</span></h2>${list.map(ticket).join('') || '<div class="empty">—</div>'}</div>`;
+    }).join('')}</div>`;
+  $('toggle').onclick = async () => {
+    await api(`/api/food/restaurants/${rid}/open`, { isOpen:!restaurant.isOpen });
+    restaurant.isOpen = !restaurant.isOpen;
+    render();
+  };
+  document.querySelectorAll('[data-act]').forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    try {
+      const o = await api(`/api/food/orders/${b.dataset.id}/${b.dataset.act}`, { restaurantId:rid });
+      fresh.delete(o.id);
+      apply(o);
+    } catch (e) { alert(e.message); b.disabled = false; }
+  });
+}
+
+function apply(o) {
+  if (['placed', 'cooking', 'ready', 'delivering'].includes(o.status)) orders.set(o.id, o);
+  else orders.delete(o.id);
+  render();
+}
+
+async function start() {
+  if (!rid) {
+    const list = await api('/api/food/restaurants');
+    $('app').innerHTML = `<div class="top"><h1>Панель ресторана</h1></div><div class="muted" style="margin:0 6px 12px">Выберите ресторан</div>
+      <div class="picker">${list.map(r => `<a href="?r=${encodeURIComponent(r.id)}"><b>${esc(r.name)}</b><div class="muted">${esc(r.address)}</div></a>`).join('')}</div>`;
+    return;
+  }
+  restaurant = await api(`/api/food/restaurants/${rid}`);
+  for (const o of await api(`/api/food/restaurants/${rid}/orders`)) orders.set(o.id, o);
+  render();
+  const events = new EventSource(`/api/events?role=restaurant&id=${encodeURIComponent(rid)}`);
+  events.addEventListener('food', e => {
+    const o = JSON.parse(e.data);
+    if (o.status === 'placed' && !orders.has(o.id)) { fresh.add(o.id); beep(); }
+    apply(o);
+  });
+}
+start();
+</script>
+</body>
+</html>

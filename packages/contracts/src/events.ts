@@ -11,7 +11,13 @@ import { TariffId } from './tariffs.js';
 export const STREAM = 'JOL';
 export const STREAM_SUBJECTS = ['jol.>'];
 
-const OrderRef = z.object({ orderId: z.string().uuid(), clientId: Id, driverId: Id.nullable() });
+/** `source: food` marks courier deliveries booked by the food service, so it can ignore everything else. */
+const OrderRef = z.object({
+  orderId: z.string().uuid(),
+  clientId: Id,
+  driverId: Id.nullable(),
+  source: z.enum(['app', 'food']).default('app'),
+});
 
 export const EventSchemas = {
   'jol.dispatch.order.created': OrderRef.extend({ tariff: TariffId, from: GeoPoint, price: z.number(), surge: z.number() }),
@@ -30,6 +36,11 @@ export const EventSchemas = {
   'jol.intercity.trip.booked': z.object({ tripId: z.string().uuid(), clientId: Id, seats: z.number().int() }),
   'jol.intercity.trip.completed': z.object({ tripId: z.string().uuid(), driverId: Id, earned: z.number().int() }),
   'jol.intercity.trip.cancelled': z.object({ tripId: z.string().uuid(), driverId: Id }),
+  'jol.food.order.placed': z.object({ foodOrderId: z.string().uuid(), clientId: Id, restaurantId: Id, total: z.number().int() }),
+  'jol.food.order.accepted': z.object({ foodOrderId: z.string().uuid(), restaurantId: Id }),
+  'jol.food.order.ready': z.object({ foodOrderId: z.string().uuid(), restaurantId: Id }),
+  'jol.food.order.delivered': z.object({ foodOrderId: z.string().uuid(), restaurantId: Id, total: z.number().int() }),
+  'jol.food.order.cancelled': z.object({ foodOrderId: z.string().uuid(), restaurantId: Id, reason: z.enum(['client', 'restaurant', 'no_courier']) }),
   'jol.accounts.rating.changed': z.object({ role: z.enum(['driver', 'client']), id: Id, rating: z.number() }),
   'jol.fleet.driver.online': z.object({ driverId: Id, tariff: TariffId }),
   'jol.fleet.driver.offline': z.object({ driverId: Id }),

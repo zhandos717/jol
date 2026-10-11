@@ -8,6 +8,7 @@
     { "path": "services/pricing" },
     { "path": "services/dispatch" },
     { "path": "services/intercity" },
-    { "path": "services/realtime" }
+    { "path": "services/realtime" },
+    { "path": "services/food" }
   ]
 }

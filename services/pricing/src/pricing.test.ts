@@ -17,6 +17,12 @@ describe('priceFor', () => {
     expect(priceFor(ROUTE, 'eco', 0, 2)).toBe(2150);
     expect(priceFor(ROUTE, 'cargo_m', 0, 2)).toBe(priceFor(ROUTE, 'cargo_m'));
     expect(priceFor(ROUTE, 'intercity', 0, 2)).toBe(priceFor(ROUTE, 'intercity'));
+    expect(priceFor(ROUTE, 'courier_bike', 0, 2)).toBe(priceFor(ROUTE, 'courier_bike'));
+  });
+
+  it('makes walking cheapest and driving the most expensive courier', () => {
+    expect(priceFor(ROUTE, 'courier_foot')).toBeLessThan(priceFor(ROUTE, 'courier_car'));
+    expect(priceFor(ROUTE, 'courier_bike')).toBeLessThan(priceFor(ROUTE, 'courier_car'));
   });
 
   it('charges loaders on cargo only', () => {
