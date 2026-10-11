@@ -1,0 +1,105 @@
+# Lite profile: the whole platform on a ~1 GB VPS (ADR-0014).
+# Same images and code as docker-compose.yml; all services run in one Node.js process,
+# OSRM reads the road graph via mmap, PostgreSQL is sized for a small box.
+# Memory limits are hard caps, so `make up-lite` proves the footprint rather than estimating it.
+name: jol-lite
+
+services:
+  gateway:
+    image: nginx:1.27-alpine
+    ports: ["8080:80"]
+    volumes:
+      - ./infra/nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./apps/web:/usr/share/nginx/html:ro
+    environment:
+      UP_ACCOUNTS: app:8081
+      UP_FLEET: app:8082
+      UP_PRICING: app:8083
+      UP_DISPATCH: app:8084
+      UP_INTERCITY: app:8085
+      UP_FOOD: app:8086
+      UP_REALTIME: app:8087
+      UP_OSRM: osrm:5000
+    depends_on: [app]
+    mem_limit: 24m
+    restart: unless-stopped
+
+  app:
+    build: { context: ., target: runtime, args: { SERVICE: all-in-one } }
+    image: jol-all-in-one
+    environment:
+      NATS_URL: nats://nats:4222
+      PG_HOST: postgres
+      SERVICE_DB_PASSWORD: ${SERVICE_DB_PASSWORD:-jol_local_dev}
+      OSRM_URL: http://osrm:5000
+      DB_POOL_MAX: "3"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      NODE_OPTIONS: --max-old-space-size=160
+    healthcheck:
+      test: ["CMD-SHELL", "for p in 8081 8082 8083 8084 8085 8086 8087; do wget -qO- http://127.0.0.1:$$p/healthz >/dev/null || exit 1; done"]
+      interval: 15s
+      start_period: 20s
+    depends_on:
+      nats: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    mem_limit: 220m
+    restart: unless-stopped
+
+  nats:
+    image: nats:2.11-alpine
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    volumes: ["nats-data:/data"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8222/healthz"]
+      interval: 5s
+      retries: 20
+    mem_limit: 48m
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17-alpine
+    command:
+      - postgres
+      - -c
+      - shared_buffers=16MB
+      - -c
+      - max_connections=30
+      - -c
+      - work_mem=1MB
+      - -c
+      - maintenance_work_mem=16MB
+      - -c
+      - effective_cache_size=64MB
+      - -c
+      - wal_buffers=1MB
+    environment:
+      POSTGRES_DB: jol
+      POSTGRES_USER: jol
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jol_local_dev}
+      SERVICE_DB_PASSWORD: ${SERVICE_DB_PASSWORD:-jol_local_dev}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sh:/docker-entrypoint-initdb.d/init.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jol -d jol"]
+      interval: 5s
+      retries: 20
+    mem_limit: 128m
+    restart: unless-stopped
+
+  osrm:
+    image: ghcr.io/project-osrm/osrm-backend:v6.0.0
+    command: osrm-routed --algorithm mld --mmap --max-table-size 1000 /data/kz.osrm
+    volumes: ["osrm-data:/data"]
+    # The cap includes page cache: at 160 MB the graph thrashes (19 req/s, p50 2.6 s);
+    # at 256 MB the city working set stays cached (~370 req/s, p50 ~50 ms).
+    mem_limit: 256m
+    restart: unless-stopped
+
+volumes:
+  pg-data:
+  nats-data:
+  # Prepared by the full profile once (needs ~1 GB RAM for a few minutes); see `make map`.
+  osrm-data:
+    name: taxi_osrm-data
+    external: true

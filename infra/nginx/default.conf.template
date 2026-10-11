@@ -1,5 +1,7 @@
 # Edge gateway: serves the web apps and routes /api/* to the owning service.
 # Services are reached by Docker DNS name; nginx re-resolves them so container restarts don't break routing.
+# Template: the nginx image substitutes ${UP_*} from the environment at start, so the full and lite
+# profiles share this file and differ only in where each upstream lives.
 
 resolver 127.0.0.11 valid=10s ipv6=off;
 
@@ -39,7 +41,7 @@ server {
   location = /healthz { access_log off; return 200 "ok\n"; }
 
   location = /api/events {
-    set $up http://realtime:8080;
+    set $up http://${UP_REALTIME};
     proxy_pass $up;
     proxy_buffering off;
     proxy_cache off;
@@ -48,21 +50,21 @@ server {
 
   location = /api/orders {
     limit_req zone=orders burst=5 nodelay;
-    set $up http://dispatch:8080;
+    set $up http://${UP_DISPATCH};
     proxy_pass $up;
   }
 
-  location ~ ^/api/(orders|places)/ { limit_req zone=api burst=100 nodelay; set $up http://dispatch:8080;  proxy_pass $up; }
-  location ~ ^/api/(quote|surge)    { limit_req zone=api burst=100 nodelay; set $up http://pricing:8080;   proxy_pass $up; }
-  location ~ ^/api/drivers?/        { limit_req zone=api burst=200 nodelay; set $up http://fleet:8080;     proxy_pass $up; }
-  location ~ ^/api/food/            { limit_req zone=api burst=100 nodelay; set $up http://food:8080;      proxy_pass $up; }
-  location ~ ^/api/trips            { limit_req zone=api burst=100 nodelay; set $up http://intercity:8080; proxy_pass $up; }
-  location = /api/me                { limit_req zone=api burst=100 nodelay; set $up http://accounts:8080;  proxy_pass $up; }
+  location ~ ^/api/(orders|places)/ { limit_req zone=api burst=100 nodelay; set $up http://${UP_DISPATCH};  proxy_pass $up; }
+  location ~ ^/api/(quote|surge)    { limit_req zone=api burst=100 nodelay; set $up http://${UP_PRICING};   proxy_pass $up; }
+  location ~ ^/api/drivers?/        { limit_req zone=api burst=200 nodelay; set $up http://${UP_FLEET};     proxy_pass $up; }
+  location ~ ^/api/food/            { limit_req zone=api burst=100 nodelay; set $up http://${UP_FOOD};      proxy_pass $up; }
+  location ~ ^/api/trips            { limit_req zone=api burst=100 nodelay; set $up http://${UP_INTERCITY}; proxy_pass $up; }
+  location = /api/me                { limit_req zone=api burst=100 nodelay; set $up http://${UP_ACCOUNTS};  proxy_pass $up; }
 
   location /osrm/route/v1/driving/ {
     limit_req zone=api burst=100 nodelay;
     # `set` must precede `rewrite ... break`, which stops the rewrite-module directives after it.
-    set $up http://osrm:5000;
+    set $up http://${UP_OSRM};
     rewrite ^/osrm(/.*)$ $1 break;
     proxy_pass $up;
   }

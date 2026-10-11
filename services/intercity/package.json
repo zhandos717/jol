@@ -4,6 +4,12 @@
   "private": true,
   "type": "module",
   "main": "dist/main.js",
+  "exports": {
+    "./service": {
+      "types": "./dist/service.d.ts",
+      "default": "./dist/service.js"
+    }
+  },
   "scripts": { "start": "node dist/main.js" },
   "dependencies": {
     "@jol/contracts": "*",

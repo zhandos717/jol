@@ -7,8 +7,8 @@ export type Pool = pg.Pool;
 export type DbClient = pg.PoolClient;
 
 /** Each service owns exactly one schema; search_path pins every connection to it. */
-export function createPool(url: string, schema: string): Pool {
-  const pool = new pg.Pool({ connectionString: url, max: 10 });
+export function createPool(url: string, schema: string, max = 10): Pool {
+  const pool = new pg.Pool({ connectionString: url, max });
   pool.on('connect', client => {
     void client.query(`SET search_path TO ${schema}`);
   });

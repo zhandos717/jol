@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "rootDir": "src", "outDir": "dist" },
+  "include": ["src"],
+  "references": [
+    { "path": "../../packages/kit" },
+    { "path": "../accounts" },
+    { "path": "../fleet" },
+    { "path": "../pricing" },
+    { "path": "../dispatch" },
+    { "path": "../intercity" },
+    { "path": "../food" },
+    { "path": "../realtime" }
+  ]
+}

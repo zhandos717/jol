@@ -1,23 +1,41 @@
 COMPOSE  := docker compose
+LITE     := docker compose -f docker-compose.lite.yml
 PSQL     := $(COMPOSE) exec -T postgres psql -U jol -d jol
 SERVICES := accounts fleet pricing dispatch intercity food realtime
 BACKUPS  := backups
 DRIVERS  ?= 1000
 
 .DEFAULT_GOAL := help
-.PHONY: help up down restart rebuild ps logs health psql test typecheck e2e bench backup restore map-reset clean
+.PHONY: help up down restart rebuild ps logs health psql test typecheck e2e bench backup restore map map-reset clean up-lite down-lite logs-lite stats-lite
 
 help: ## Показать список команд
 	@awk 'BEGIN {FS = ":.*## "} /^[a-z-]+:.*## / {printf "  \033[36m%-11s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 up: ## Собрать и запустить весь стек (первый раз ещё готовит карту)
-	@[ -f .env ] || cp .env.example .env
+	-$(LITE) down
 	$(COMPOSE) up -d --build --wait --wait-timeout 900
 	@echo "Пассажир: http://localhost:8080/"
 	@echo "Водитель: http://localhost:8080/driver.html"
 
 down: ## Остановить (данные остаются)
 	$(COMPOSE) down
+
+map: ## Подготовить карту для OSRM, если её ещё нет (разово, нужно ~1 ГБ RAM на несколько минут)
+	$(COMPOSE) up osrm-download osrm-prepare
+
+up-lite: map ## Всё на ~250 МБ RAM: сервисы в одном процессе, OSRM через mmap
+	-$(COMPOSE) down
+	$(LITE) up -d --build --wait --wait-timeout 300
+	@echo "Пассажир: http://localhost:8080/   Еда: http://localhost:8080/food.html"
+
+down-lite: ## Остановить лёгкий профиль
+	$(LITE) down
+
+logs-lite: ## Логи лёгкого профиля
+	$(LITE) logs -f --tail=100 app
+
+stats-lite: ## Сколько памяти занимает лёгкий профиль
+	@docker stats --no-stream --format '{{.Name}}\t{{.MemUsage}}' | grep '^jol-lite'
 
 restart: ## Перезапустить сервис: make restart S=dispatch
 	$(COMPOSE) restart $(or $(S),$(SERVICES))
