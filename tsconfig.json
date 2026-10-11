@@ -1,0 +1,13 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/contracts" },
+    { "path": "packages/kit" },
+    { "path": "services/accounts" },
+    { "path": "services/fleet" },
+    { "path": "services/pricing" },
+    { "path": "services/dispatch" },
+    { "path": "services/intercity" },
+    { "path": "services/realtime" }
+  ]
+}

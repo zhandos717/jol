@@ -202,8 +202,8 @@ const clientId = (() => {
   } catch { return crypto.randomUUID(); }
 })();
 
-async function api(path, body) {
-  const r = await fetch(path, body ? { method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify(body) } : undefined);
+async function api(path, body, headers = {}) {
+  const r = await fetch(path, body ? { method:'POST', headers:{ 'Content-Type':'application/json', ...headers }, body:JSON.stringify(body) } : undefined);
   const j = await r.json();
   if (!r.ok) throw new Error(j.error || 'Ошибка сервера');
   return j;
@@ -273,7 +273,26 @@ const events = new EventSource(`/api/events?role=client&id=${clientId}`);
 events.addEventListener('order', e => applyOrder(JSON.parse(e.data)));
 events.addEventListener('driver_location', e => moveCar(JSON.parse(e.data)));
 
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/** Same key for every retry of one tap: the server returns the original order instead of a duplicate. */
+async function placeOrder(body) {
+  const key = crypto.randomUUID();
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await api('/api/orders', body, { 'Idempotency-Key': key });
+    } catch (e) {
+      if (!(e instanceof TypeError) || attempt === 2) throw e;
+      await sleep(500 * 2 ** attempt);
+    }
+  }
+}
+
+let ordering = false;
 document.getElementById('order').onclick = async () => {
+  if (ordering) return;
+  ordering = true;
+  document.getElementById('order').disabled = true;
   try {
     if (order) {
       applyOrder(await api(`/api/orders/${order.id}/cancel`, { clientId }));
@@ -281,13 +300,18 @@ document.getElementById('order').onclick = async () => {
     }
     if (!points.from || !points.to) return alert('Укажите откуда и куда');
     showStatus('Создаём заказ…');
-    applyOrder(await api('/api/orders', {
+    applyOrder(await placeOrder({
       clientId, tariff:tariff.id, from:points.from, to:points.to, quoteId:quote?.quoteId,
       fromLabel:document.getElementById('from').value, toLabel:document.getElementById('to').value,
       loaders, cargoNote:document.getElementById('cargoNote').value,
       departAt:tariff.group === 'intercity' && document.getElementById('departAt').value ? new Date(document.getElementById('departAt').value).toISOString() : null,
     }));
-  } catch (e) { showStatus(esc(e.message), false); }
+  } catch (e) {
+    showStatus(esc(e instanceof TypeError ? 'Нет связи. Проверьте интернет и попробуйте ещё раз' : e.message), false);
+  } finally {
+    ordering = false;
+    document.getElementById('order').disabled = false;
+  }
 };
 
 const nearby = L.layerGroup().addTo(map);

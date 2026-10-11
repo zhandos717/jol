@@ -1,0 +1,353 @@
+openapi: 3.1.0
+info:
+  title: Jol public API
+  version: 1.0.0
+  description: |
+    API шлюза, которым пользуются приложения пассажира и водителя.
+    Ошибки всегда в формате `{ "error": "текст" }`. Лимит: 50 запросов/с с адреса, `POST /api/orders` — 2/с.
+  license: { name: MIT }
+servers:
+  - url: http://localhost:8080
+tags:
+  - { name: pricing, description: Цена и коэффициент спроса (сервис pricing) }
+  - { name: orders, description: Заказы (сервис dispatch) }
+  - { name: fleet, description: Водители на линии (сервис fleet) }
+  - { name: accounts, description: Профили и статистика (сервис accounts) }
+  - { name: intercity, description: Рейсы с попутчиками (сервис intercity) }
+  - { name: realtime, description: Поток событий (сервис realtime) }
+
+paths:
+  /api/quote:
+    post:
+      tags: [pricing]
+      summary: Цены всех тарифов для маршрута; цена фиксируется на 3 минуты
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/Route' } } } }
+      responses:
+        '200':
+          description: Котировка
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  km: { type: number }
+                  min: { type: number }
+                  surge: { type: number, example: 1.4 }
+                  quoteId: { type: string, format: uuid }
+                  quoteExpiresAt: { type: integer, description: epoch ms }
+                  loaderPrice: { type: integer, example: 3000 }
+                  prices: { type: object, additionalProperties: { type: integer }, example: { eco: 1080, comfort: 1450 } }
+        '400': { $ref: '#/components/responses/Error' }
+
+  /api/surge/map:
+    get:
+      tags: [pricing]
+      summary: Зоны с повышенным спросом вокруг точки
+      parameters: [{ $ref: '#/components/parameters/lat' }, { $ref: '#/components/parameters/lon' }]
+      responses:
+        '200':
+          description: Зоны с коэффициентом выше 1.0
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties: { south: { type: number }, west: { type: number }, north: { type: number }, east: { type: number }, surge: { type: number } }
+
+  /api/orders:
+    post:
+      tags: [orders]
+      summary: Создать заказ
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          description: UUID одного нажатия «Заказать». Повтор с тем же ключом возвращает тот же заказ.
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [clientId, tariff, from, to]
+              properties:
+                clientId: { $ref: '#/components/schemas/Id' }
+                tariff: { $ref: '#/components/schemas/Tariff' }
+                from: { $ref: '#/components/schemas/Point' }
+                to: { $ref: '#/components/schemas/Point' }
+                fromLabel: { type: string }
+                toLabel: { type: string }
+                quoteId: { type: string, format: uuid, description: Зафиксированная котировка }
+                loaders: { type: integer, minimum: 0, maximum: 4, description: Только для грузовых тарифов }
+                cargoNote: { type: string, maxLength: 300 }
+                departAt: { type: string, format: date-time, description: Для заказа на время }
+      responses:
+        '200': { description: Заказ, content: { application/json: { schema: { $ref: '#/components/schemas/Order' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '409': { description: У пассажира уже есть активный заказ, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '429': { $ref: '#/components/responses/Error' }
+
+  /api/orders/{id}/cancel:
+    post:
+      tags: [orders]
+      summary: Пассажир отменяет заказ (до начала поездки)
+      parameters: [{ $ref: '#/components/parameters/orderId' }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [clientId], properties: { clientId: { $ref: '#/components/schemas/Id' } } } } } }
+      responses: { '200': { $ref: '#/components/responses/Order' }, '403': { $ref: '#/components/responses/Error' }, '409': { $ref: '#/components/responses/Error' } }
+
+  /api/orders/{id}/{action}:
+    post:
+      tags: [orders]
+      summary: Действие водителя
+      description: |
+        `accept` — только водитель, которому сейчас предложен заказ.
+        `decline` — отказаться от предложения.
+        `arrived` → `start` → `finish` — по порядку.
+      parameters:
+        - { $ref: '#/components/parameters/orderId' }
+        - { name: action, in: path, required: true, schema: { type: string, enum: [accept, decline, arrived, start, finish] } }
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [driverId], properties: { driverId: { $ref: '#/components/schemas/Id' } } } } } }
+      responses: { '200': { $ref: '#/components/responses/Order' }, '403': { $ref: '#/components/responses/Error' }, '409': { $ref: '#/components/responses/Error' } }
+
+  /api/orders/{id}/rate:
+    post:
+      tags: [orders]
+      summary: Оценить завершённую поездку (каждая сторона один раз)
+      parameters: [{ $ref: '#/components/parameters/orderId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [by, id, stars]
+              properties:
+                by: { type: string, enum: [client, driver] }
+                id: { $ref: '#/components/schemas/Id' }
+                stars: { type: integer, minimum: 1, maximum: 5 }
+                tags: { type: array, items: { type: string }, maxItems: 5 }
+                comment: { type: string, maxLength: 300 }
+      responses: { '200': { description: OK }, '409': { $ref: '#/components/responses/Error' } }
+
+  /api/places/recent:
+    get:
+      tags: [orders]
+      summary: Недавние адреса пассажира из завершённых поездок
+      parameters: [{ name: clientId, in: query, required: true, schema: { $ref: '#/components/schemas/Id' } }]
+      responses:
+        '200': { description: До 8 адресов, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Place' } } } } }
+
+  /api/driver/online:
+    post:
+      tags: [fleet]
+      summary: Выйти на линию (создаёт или обновляет профиль)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/DriverProfile'
+                - $ref: '#/components/schemas/Point'
+      responses: { '200': { description: Аккаунт водителя, content: { application/json: { schema: { $ref: '#/components/schemas/DriverAccount' } } } } }
+
+  /api/driver/offline:
+    post:
+      tags: [fleet]
+      summary: Уйти с линии
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [id], properties: { id: { $ref: '#/components/schemas/Id' } } } } } }
+      responses: { '200': { description: OK }, '409': { description: Есть незавершённый заказ } }
+
+  /api/driver/location:
+    post:
+      tags: [fleet]
+      summary: Координаты водителя; раз в 3–5 с в движении и раз в 30 с как пульс
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/Point'
+                - type: object
+                  required: [id]
+                  properties: { id: { $ref: '#/components/schemas/Id' }, heading: { type: number, description: Градусы, 0 — север } }
+      responses: { '200': { description: OK }, '404': { description: Водитель не на линии, нужно снова вызвать /online } }
+
+  /api/drivers/nearby:
+    get:
+      tags: [fleet]
+      summary: До 30 свободных машин в радиусе 3 км
+      parameters: [{ $ref: '#/components/parameters/lat' }, { $ref: '#/components/parameters/lon' }]
+      responses: { '200': { description: Машины, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/DriverView' } } } } } }
+
+  /api/me:
+    get:
+      tags: [accounts]
+      summary: Рейтинг и статистика
+      parameters:
+        - { name: role, in: query, required: true, schema: { type: string, enum: [client, driver] } }
+        - { name: id, in: query, required: true, schema: { $ref: '#/components/schemas/Id' } }
+      responses:
+        '200': { description: Статистика, content: { application/json: { schema: { type: object, properties: { rating: { type: number }, trips: { type: integer }, earned: { type: integer } } } } } }
+
+  /api/trips:
+    post:
+      tags: [intercity]
+      summary: Водитель публикует рейс
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [driver, from, to, departAt, seats, pricePerSeat]
+              properties:
+                driver: { $ref: '#/components/schemas/DriverProfile' }
+                from: { $ref: '#/components/schemas/Place' }
+                to: { $ref: '#/components/schemas/Place' }
+                departAt: { type: string, format: date-time }
+                seats: { type: integer, minimum: 1, maximum: 7 }
+                pricePerSeat: { type: integer, minimum: 500 }
+                comment: { type: string, maxLength: 300 }
+      responses: { '200': { $ref: '#/components/responses/Trip' }, '400': { $ref: '#/components/responses/Error' } }
+
+  /api/trips/search:
+    get:
+      tags: [intercity]
+      summary: Открытые рейсы между городами (радиус города 25 км)
+      parameters:
+        - { name: fromLat, in: query, required: true, schema: { type: number } }
+        - { name: fromLon, in: query, required: true, schema: { type: number } }
+        - { name: toLat, in: query, required: true, schema: { type: number } }
+        - { name: toLon, in: query, required: true, schema: { type: number } }
+        - { name: date, in: query, schema: { type: string, format: date }, description: День по времени Казахстана (UTC+5) }
+        - { name: seats, in: query, schema: { type: integer, default: 1 } }
+        - { name: clientId, in: query, schema: { $ref: '#/components/schemas/Id' } }
+      responses: { '200': { description: Рейсы, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Trip' } } } } } }
+
+  /api/trips/mine:
+    get:
+      tags: [intercity]
+      summary: Активные рейсы водителя или брони пассажира
+      parameters:
+        - { name: role, in: query, required: true, schema: { type: string, enum: [client, driver] } }
+        - { name: id, in: query, required: true, schema: { $ref: '#/components/schemas/Id' } }
+      responses: { '200': { description: Рейсы, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Trip' } } } } } }
+
+  /api/trips/suggest-price:
+    get:
+      tags: [intercity]
+      summary: Расстояние и рекомендуемая цена места
+      parameters:
+        - { name: fromLat, in: query, required: true, schema: { type: number } }
+        - { name: fromLon, in: query, required: true, schema: { type: number } }
+        - { name: toLat, in: query, required: true, schema: { type: number } }
+        - { name: toLon, in: query, required: true, schema: { type: number } }
+      responses: { '200': { description: OK, content: { application/json: { schema: { type: object, properties: { km: { type: number }, hours: { type: number }, pricePerSeat: { type: integer } } } } } } }
+
+  /api/trips/{id}/book:
+    post:
+      tags: [intercity]
+      summary: Забронировать места
+      parameters: [{ $ref: '#/components/parameters/tripId' }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [clientId, seats], properties: { clientId: { $ref: '#/components/schemas/Id' }, seats: { type: integer, minimum: 1 } } } } } }
+      responses: { '200': { $ref: '#/components/responses/Trip' }, '409': { description: Мест нет или бронь уже есть } }
+
+  /api/trips/{id}/unbook:
+    post:
+      tags: [intercity]
+      summary: Отменить бронь до выезда
+      parameters: [{ $ref: '#/components/parameters/tripId' }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [clientId], properties: { clientId: { $ref: '#/components/schemas/Id' } } } } } }
+      responses: { '200': { $ref: '#/components/responses/Trip' } }
+
+  /api/trips/{id}/status:
+    post:
+      tags: [intercity]
+      summary: Водитель меняет статус рейса
+      parameters: [{ $ref: '#/components/parameters/tripId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [driverId, status], properties: { driverId: { $ref: '#/components/schemas/Id' }, status: { type: string, enum: [departed, done, cancelled] } } }
+      responses: { '200': { $ref: '#/components/responses/Trip' }, '409': { $ref: '#/components/responses/Error' } }
+
+  /api/events:
+    get:
+      tags: [realtime]
+      summary: Поток Server-Sent Events
+      description: 'События: `order`, `offer`, `offer_expired`, `driver_location`, `trip`. При подключении приходит снимок активного заказа.'
+      parameters:
+        - { name: role, in: query, required: true, schema: { type: string, enum: [client, driver] } }
+        - { name: id, in: query, required: true, schema: { $ref: '#/components/schemas/Id' } }
+      responses: { '200': { description: text/event-stream, content: { text/event-stream: { schema: { type: string } } } } }
+
+components:
+  parameters:
+    lat: { name: lat, in: query, required: true, schema: { type: number } }
+    lon: { name: lon, in: query, required: true, schema: { type: number } }
+    orderId: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    tripId: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+  responses:
+    Error: { description: Ошибка, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Order: { description: Заказ, content: { application/json: { schema: { $ref: '#/components/schemas/Order' } } } }
+    Trip: { description: Рейс, content: { application/json: { schema: { $ref: '#/components/schemas/Trip' } } } }
+  schemas:
+    Error: { type: object, properties: { error: { type: string } } }
+    Id: { type: string, pattern: '^[A-Za-z0-9_-]{1,64}$' }
+    Tariff: { type: string, enum: [eco, comfort, business, cargo_s, cargo_m, cargo_l, intercity] }
+    Point: { type: object, required: [lat, lon], properties: { lat: { type: number }, lon: { type: number } } }
+    Place: { allOf: [{ $ref: '#/components/schemas/Point' }, { type: object, properties: { label: { type: string } } }] }
+    Route: { type: object, required: [from, to], properties: { from: { $ref: '#/components/schemas/Point' }, to: { $ref: '#/components/schemas/Point' } } }
+    DriverProfile:
+      type: object
+      required: [id, name, tariff]
+      properties: { id: { $ref: '#/components/schemas/Id' }, name: { type: string }, car: { type: string }, plate: { type: string }, tariff: { $ref: '#/components/schemas/Tariff' } }
+    DriverAccount:
+      allOf: [{ $ref: '#/components/schemas/DriverProfile' }, { type: object, properties: { rating: { type: number }, trips: { type: integer }, earned: { type: integer } } }]
+    DriverView:
+      allOf: [{ $ref: '#/components/schemas/DriverProfile' }, { type: object, properties: { rating: { type: number }, trips: { type: integer }, lat: { type: number }, lon: { type: number }, heading: { type: [number, 'null'] } } }]
+    Order:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        clientId: { $ref: '#/components/schemas/Id' }
+        driverId: { type: [string, 'null'] }
+        tariff: { $ref: '#/components/schemas/Tariff' }
+        status: { type: string, enum: [scheduled, searching, accepted, arrived, in_progress, done, cancelled, no_drivers] }
+        from: { $ref: '#/components/schemas/Point' }
+        to: { $ref: '#/components/schemas/Point' }
+        fromLabel: { type: string }
+        toLabel: { type: string }
+        km: { type: number }
+        min: { type: number }
+        price: { type: integer }
+        surge: { type: number }
+        loaders: { type: integer }
+        cargoNote: { type: string }
+        departAt: { type: [integer, 'null'] }
+        offerTo: { type: [string, 'null'] }
+        offerExpiresAt: { type: [integer, 'null'] }
+        createdAt: { type: integer }
+        driver: { oneOf: [{ $ref: '#/components/schemas/DriverView' }, { type: 'null' }] }
+        client: { type: object, properties: { rating: { type: number }, trips: { type: integer } } }
+    Trip:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        from: { $ref: '#/components/schemas/Place' }
+        to: { $ref: '#/components/schemas/Place' }
+        departAt: { type: integer }
+        seats: { type: integer }
+        seatsLeft: { type: integer }
+        pricePerSeat: { type: integer }
+        km: { type: number }
+        hours: { type: number }
+        comment: { type: string }
+        status: { type: string, enum: [open, departed, done, cancelled] }
+        driver: { $ref: '#/components/schemas/DriverView' }
+        bookings: { type: array, description: Только для водителя рейса, items: { type: object, properties: { seats: { type: integer }, rating: { type: number } } } }
+        myBooking: { type: [object, 'null'], description: Только для пассажира, properties: { seats: { type: integer } } }

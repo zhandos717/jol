@@ -1,6 +1,9 @@
-const BASE = process.env.BASE_URL || 'http://localhost:8080';
+// Runs inside the compose network (see `make bench`) and calls services directly,
+// so it measures service throughput rather than the gateway's per-client rate limit.
+const FLEET = process.env.FLEET_URL || 'http://fleet:8080';
+const PRICING = process.env.PRICING_URL || 'http://pricing:8080';
 const DRIVERS = +(process.argv[2] || 1000);
-const post = (p, b) => fetch(BASE + p, { method: 'POST', body: JSON.stringify(b) });
+const post = (base, p, b) => fetch(base + p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) });
 const rnd = (a, d) => a + Math.random() * d;
 
 async function bench(name, total, concurrency, request) {
@@ -26,13 +29,13 @@ async function bench(name, total, concurrency, request) {
 (async () => {
   const ids = Array.from({ length: DRIVERS }, (_, i) => `bench-${i}`);
   for (let i = 0; i < ids.length; i += 200) {
-    await Promise.all(ids.slice(i, i + 200).map(id => post('/api/driver/online',
+    await Promise.all(ids.slice(i, i + 200).map(id => post(FLEET, '/api/driver/online',
       { id, name: 'Bench', car: 'Bench', plate: '000', tariff: 'eco', lat: rnd(43.2, .1), lon: rnd(76.85, .1) }).then(r => r.text())));
   }
   console.log(`Водителей онлайн: ${DRIVERS}\n`);
-  await bench('координаты водителя', 20000, 100, () => post('/api/driver/location', { id: ids[Math.floor(Math.random() * ids.length)], lat: rnd(43.2, .1), lon: rnd(76.85, .1) }));
-  await bench('машины рядом', 3000, 50, () => fetch(`${BASE}/api/drivers/nearby?lat=43.25&lon=76.9`));
-  await bench('карта спроса', 3000, 50, () => fetch(`${BASE}/api/surge/map?lat=43.25&lon=76.9`));
-  await bench('расчёт цены (OSRM)', 2000, 50, () => post('/api/quote', { from: { lat: rnd(43.2, .08), lon: rnd(76.85, .1) }, to: { lat: rnd(43.2, .08), lon: rnd(76.85, .1) } }));
-  await Promise.all(ids.map(id => post('/api/driver/offline', { id }).then(r => r.text())));
+  await bench('координаты водителя', 20000, 100, () => post(FLEET, '/api/driver/location', { id: ids[Math.floor(Math.random() * ids.length)], lat: rnd(43.2, .1), lon: rnd(76.85, .1) }));
+  await bench('машины рядом', 3000, 50, () => fetch(`${FLEET}/api/drivers/nearby?lat=43.25&lon=76.9`));
+  await bench('карта спроса', 3000, 50, () => fetch(`${PRICING}/api/surge/map?lat=43.25&lon=76.9`));
+  await bench('расчёт цены (OSRM)', 2000, 50, () => post(PRICING, '/api/quote', { from: { lat: rnd(43.2, .08), lon: rnd(76.85, .1) }, to: { lat: rnd(43.2, .08), lon: rnd(76.85, .1) } }));
+  await Promise.all(ids.map(id => post(FLEET, '/api/driver/offline', { id }).then(r => r.text())));
 })();
