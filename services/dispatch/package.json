@@ -1,0 +1,13 @@
+{
+  "name": "@jol/dispatch",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": { "start": "node dist/main.js" },
+  "dependencies": {
+    "@jol/contracts": "*",
+    "@jol/kit": "*",
+    "zod": "^3.25.0"
+  }
+}

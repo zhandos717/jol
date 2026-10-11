@@ -97,8 +97,17 @@ function setPos(lat, lon) {
   me.setLatLng([lat, lon]);
   const el = me.getElement()?.querySelector('.car-ic');
   if (el) el.style.transform = `rotate(${heading}deg)`;
-  if (online) api('/api/driver/location', { id:driverId, lat, lon, heading }).catch(() => {});
+  if (online) sendLocation();
 }
+
+async function sendLocation() {
+  try {
+    await api('/api/driver/location', { id:driverId, ...pos, heading });
+  } catch {
+    if (online) api('/api/driver/online', { id:driverId, ...profile, ...pos }).catch(() => {});
+  }
+}
+setInterval(() => { if (online) sendLocation(); }, 30000);
 
 const simBox = $('sim');
 simBox.checked = store.get('sim', !navigator.geolocation);
