@@ -89,10 +89,10 @@ services:
 
   osrm:
     image: ghcr.io/project-osrm/osrm-backend:v6.0.0
-    command: osrm-routed --algorithm mld --mmap --max-table-size 1000 /data/kz.osrm
+    command: osrm-routed --algorithm ch --mmap=1 --max-table-size 1000 /data/kz.osrm
     volumes: ["osrm-data:/data"]
-    # The cap includes page cache: at 160 MB the graph thrashes (19 req/s, p50 2.6 s);
-    # at 256 MB the city working set stays cached (~370 req/s, p50 ~50 ms).
+    # The cap includes page cache. Alone, CH keeps full speed down to ~112 MB (MLD needs ~320 MB),
+    # but next to the app under load 160 MB timed out; 256 MB holds. See ADR-0015.
     mem_limit: 256m
     restart: unless-stopped
 

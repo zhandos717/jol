@@ -60,7 +60,7 @@ jobs:
           docker volume create taxi_osrm-data
           docker run --rm -v taxi_osrm-data:/data -v "$PWD/.osrm-cache:/cache" alpine sh -c 'cp -a /cache/. /data/'
       - name: Start stack
-        run: docker compose up -d --build --wait --wait-timeout 900
+        run: docker compose up -d --build --wait --wait-timeout 1800
       - name: Save prepared map to cache
         if: steps.osrm.outputs.cache-hit != 'true'
         run: |

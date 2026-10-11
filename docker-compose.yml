@@ -127,7 +127,7 @@ services:
 
   osrm:
     image: ghcr.io/project-osrm/osrm-backend:v6.0.0
-    command: osrm-routed --algorithm mld --max-table-size 1000 /data/kz.osrm
+    command: osrm-routed --algorithm ch --max-table-size 1000 /data/kz.osrm
     volumes: ["osrm-data:/data"]
     depends_on:
       osrm-prepare: { condition: service_completed_successfully }
@@ -139,7 +139,7 @@ services:
     volumes: ["osrm-data:/data"]
     entrypoint: ["sh", "-c"]
     command:
-      - '[ -f /data/kz.osrm.mldgr ] || [ -f /data/kz.osm.pbf ] || { curl -fL --retry 3 -o /data/kz.osm.pbf.part "$$OSM_PBF_URL" && mv /data/kz.osm.pbf.part /data/kz.osm.pbf; }'
+      - '[ -f /data/kz.osrm.hsgr ] || [ -f /data/kz.osrm.ebg ] || [ -f /data/kz.osm.pbf ] || { curl -fL --retry 3 -o /data/kz.osm.pbf.part "$$OSM_PBF_URL" && mv /data/kz.osm.pbf.part /data/kz.osm.pbf; }'
     environment:
       OSM_PBF_URL: https://download.geofabrik.de/asia/kazakhstan-latest.osm.pbf
 
