@@ -245,6 +245,7 @@ function applyOrder(o) {
   btn.textContent = rideActive ? 'Отменить' : 'Заказать';
   btn.classList.toggle('cancel', rideActive);
   if (o.driver) moveCar(o.driver);
+  document.getElementById('mainPanel').classList.toggle('riding', rideActive);
 
   const d = o.driver, car = d && `<b>${esc(d.car)}</b> · ${esc(d.plate)}`;
   if (o.delivery) return applyDelivery(o, d);

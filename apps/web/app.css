@@ -104,3 +104,5 @@ details { margin-top:8px; } summary { color:var(--muted); font-size:13px; text-a
 .pin-code { margin-top:8px; padding:10px 12px; border-radius:16px; background:var(--brand-soft); font-size:13px; color:var(--muted); }
 .pin-code b { display:block; font-size:28px; letter-spacing:.3em; color:var(--fg); margin:2px 0; }
 .pin-code span { display:block; font-size:12px; }
+.panel.riding #segment, .panel.riding #tariffs, .panel.riding .cargo-opts, .panel.riding .surge,
+.panel.riding .link-btn, .panel.riding details { display:none !important; }

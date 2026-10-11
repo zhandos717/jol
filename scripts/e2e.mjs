@@ -107,6 +107,12 @@ try {
     assert.ok(quote.quoteId);
   });
 
+  await step('map route geometry through the gateway OSRM proxy', async () => {
+    const r = await ok(`/osrm/route/v1/driving/${ALMATY.lon},${ALMATY.lat};${DEST.lon},${DEST.lat}?overview=full&geometries=geojson&steps=true`);
+    assert.equal(r.code, 'Ok');
+    assert.ok(r.routes[0].geometry.coordinates.length > 10);
+  });
+
   await step('nearby shows the free driver', async () => {
     const list = await ok(`/api/drivers/nearby?lat=${ALMATY.lat}&lon=${ALMATY.lon}`);
     assert.ok(list.some(d => d.id === driverId));

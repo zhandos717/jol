@@ -51,6 +51,12 @@ flowchart LR
 | **Водитель едет** | **В пути** | **Оценка водителя** | **Попутчики** |
 | ![](docs/screenshots/06-driver-coming.jpg) | ![](docs/screenshots/07-in-ride.jpg) | ![](docs/screenshots/08-rate-driver.jpg) | ![](docs/screenshots/09-carpool.jpg) |
 
+**Доставка посылок**
+
+| Заказ курьера | Код у отправителя | Курьер вручает по коду |
+|---|---|---|
+| ![](docs/screenshots/22-parcel-order.jpg) | ![](docs/screenshots/23-parcel-sender-code.jpg) | ![](docs/screenshots/24-courier-handover.jpg) |
+
 **Еда**
 
 | Рестораны | Меню | Оформление | Отслеживание | Панель ресторана |
