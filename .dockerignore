@@ -1,0 +1,9 @@
+data.json
+*.log
+node_modules
+osrm
+backups
+scripts
+.env
+*.md
+Makefile

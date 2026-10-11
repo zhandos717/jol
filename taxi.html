@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Мини Такси</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link rel="stylesheet" href="app.css">
+<script src="rating.js"></script>
+<script src="vehicles.js"></script>
+<script src="cities.js"></script>
+</head>
+<body>
+<div id="map"></div>
+<button class="fab glass" id="geo" aria-label="Моё местоположение">
+  <svg viewBox="0 0 24 24" fill="currentColor"><path d="M21.3 2.7a1 1 0 0 0-1.06-.23L3.1 9.1a1 1 0 0 0 .07 1.9l7.17 2.17 2.17 7.17a1 1 0 0 0 1.9.07l6.63-17.14a1 1 0 0 0-.23-1.06z"/></svg>
+</button>
+<div class="panel glass" id="mainPanel">
+  <div class="grabber"></div>
+  <div class="fields">
+    <div class="field from">
+      <svg class="pin" viewBox="0 0 20 20"><circle cx="10" cy="10" r="6" fill="none" stroke="#c8553d" stroke-width="3.5"/></svg>
+      <input id="from" placeholder="Откуда" autocomplete="off"><div class="sugg glass"></div></div>
+    <div class="field to">
+      <svg class="pin" viewBox="0 0 20 20"><circle cx="10" cy="10" r="6" fill="none" style="stroke:var(--dest)" stroke-width="3.5"/></svg>
+      <input id="to" placeholder="Куда" autocomplete="off"><div class="sugg glass"></div></div>
+  </div>
+  <button class="cta go" id="go">Построить маршрут</button>
+  <button class="link-btn" id="openTrips">Межгород с попутчиками — от 1 места ›</button>
+  <div class="info" id="info">
+    <div class="meta" id="meta"></div>
+    <div class="segment" id="segment"><button data-g="taxi" class="active">Такси</button><button data-g="cargo">Грузовое</button><button data-g="intercity">Межгород</button></div>
+    <div class="surge" id="surge"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg><div><b id="surgeK"></b> · Высокий спрос рядом<div style="opacity:.8">Цена выше обычной, чтобы машина нашлась быстрее</div></div></div>
+    <div class="tariffs" id="tariffs"></div>
+    <div class="cargo-opts" id="cargoOpts">
+      <div class="opt"><div>Грузчики<div class="sub" id="loaderPrice"></div></div>
+        <div class="stepper"><button id="ldMinus">−</button><b id="loaders">0</b><button id="ldPlus">+</button></div></div>
+      <input id="cargoNote" maxlength="300" placeholder="Что везём? Этаж, лифт, габариты">
+    </div>
+    <div class="cargo-opts" id="icOpts">
+      <div class="opt"><div>Когда<div class="sub">Пусто — прямо сейчас</div></div><input type="datetime-local" id="departAt" style="width:auto;border:none;padding:0;text-align:right"></div>
+    </div>
+    <button class="cta order" id="order">Заказать</button>
+    <div class="status" id="status"><div class="spin" id="spin"></div><div id="statusText"></div></div>
+    <details><summary>Как ехать ›</summary><ol class="steps" id="steps"></ol></details>
+  </div>
+</div>
+<div class="panel glass" id="tripsPanel" style="display:none">
+  <div class="grabber"></div>
+  <div class="sheet-head"><b>Попутчики</b><button id="closeTrips">Назад</button></div>
+  <datalist id="cityList"></datalist>
+  <div class="form2">
+    <input id="tFrom" list="cityList" placeholder="Откуда (город)">
+    <input id="tTo" list="cityList" placeholder="Куда (город)">
+    <div class="opt">Дата<input type="date" id="tDate"></div>
+    <div class="opt">Мест<div class="stepper"><button id="tMinus">−</button><b id="tSeats">1</b><button id="tPlus">+</button></div></div>
+  </div>
+  <button class="cta go" id="tSearch">Найти рейсы</button>
+  <div class="trip-list" id="tResults"></div>
+</div>
+<script>
+const map = L.map('map', { zoomControl:false }).setView([43.238, 76.889], 12);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution:'© OpenStreetMap', maxZoom:19 }).addTo(map);
+
+const points = { from:null, to:null };
+const markers = {};
+let routeLine;
+
+function setPoint(key, lat, lon, label) {
+  points[key] = { lat, lon };
+  if (label) document.getElementById(key).value = label;
+  if (markers[key]) map.removeLayer(markers[key]);
+  markers[key] = L.marker([lat, lon], { icon:L.divIcon({ className:'', iconSize:[28, 28],
+    html:`<div class="end-pin" style="background:${key === 'from' ? '#c8553d' : '#3a3a3c'}"></div>` }) }).addTo(map);
+  if (points.from && points.to) route(); else map.setView([lat, lon], 15);
+}
+
+async function geocode(q) {
+  const c = map.getCenter();
+  const url = `https://nominatim.openstreetmap.org/search?format=json&limit=6&accept-language=ru&q=${encodeURIComponent(q)}`
+    + `&viewbox=${c.lng-1},${c.lat+1},${c.lng+1},${c.lat-1}`;
+  return (await fetch(url)).json();
+}
+
+async function reverse(lat, lon) {
+  const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&accept-language=ru&lat=${lat}&lon=${lon}`);
+  const j = await r.json();
+  return j.display_name?.split(',').slice(0, 3).join(',') || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+}
+
+const CLOCK = '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
+
+async function showRecent(key, box) {
+  if (rideActive) return;
+  let places = [];
+  try { places = await api(`/api/places/recent?clientId=${clientId}`); } catch {}
+  if (!places.length) { box.style.display = 'none'; return; }
+  box.innerHTML = '<div class="sugg-head">Недавние адреса</div>';
+  places.forEach(p => {
+    const d = document.createElement('div');
+    d.className = 'recent';
+    d.innerHTML = CLOCK + `<span>${esc(p.label || 'Точка на карте')}</span>`;
+    d.onmousedown = e => e.preventDefault();
+    d.onclick = () => { box.style.display = 'none'; setPoint(key, p.lat, p.lon, p.label); };
+    box.appendChild(d);
+  });
+  box.style.display = 'block';
+}
+
+for (const key of ['from', 'to']) {
+  const input = document.getElementById(key);
+  const box = input.nextElementSibling;
+  let t;
+  input.addEventListener('focus', () => { if (input.value.length < 3) showRecent(key, box); });
+  input.addEventListener('blur', () => setTimeout(() => { box.style.display = 'none'; }, 150));
+  input.addEventListener('input', () => {
+    clearTimeout(t);
+    if (input.value.length < 3) { showRecent(key, box); return; }
+    t = setTimeout(async () => {
+      const res = await geocode(input.value);
+      box.innerHTML = '';
+      res.forEach(r => {
+        const d = document.createElement('div');
+        d.textContent = r.display_name;
+        d.onmousedown = e => e.preventDefault();
+        d.onclick = () => { box.style.display = 'none'; setPoint(key, +r.lat, +r.lon, r.display_name.split(',').slice(0, 3).join(',')); };
+        box.appendChild(d);
+      });
+      box.style.display = res.length ? 'block' : 'none';
+    }, 400);
+  });
+}
+
+map.on('click', async e => {
+  if (rideActive) return;
+  const key = !points.from ? 'from' : 'to';
+  setPoint(key, e.latlng.lat, e.latlng.lng, await reverse(e.latlng.lat, e.latlng.lng));
+});
+
+let meMarker, meCircle;
+function locate(fillFrom) {
+  if (!navigator.geolocation) return alert('Браузер не поддерживает геолокацию');
+  navigator.geolocation.getCurrentPosition(async p => {
+    const { latitude:lat, longitude:lon, accuracy } = p.coords;
+    if (meMarker) { map.removeLayer(meMarker); map.removeLayer(meCircle); }
+    meCircle = L.circle([lat, lon], { radius:accuracy, color:'#1a73e8', weight:1, fillOpacity:.1 }).addTo(map);
+    meMarker = L.marker([lat, lon], { icon:L.divIcon({ className:'', html:'<div class="me"></div>', iconSize:[22, 22] }) })
+      .addTo(map).bindPopup(`Вы здесь<br>${lat.toFixed(6)}, ${lon.toFixed(6)}<br>точность ±${Math.round(accuracy)} м`);
+    if (fillFrom || !points.from) setPoint('from', lat, lon, await reverse(lat, lon));
+  }, e => alert('Не удалось получить геолокацию: ' + e.message), { enableHighAccuracy:true, timeout:10000 });
+}
+document.getElementById('geo').onclick = () => locate(true);
+locate(false);
+
+let tariff = TARIFFS[0], loaders = 0;
+
+function renderTariffs() {
+  const g = tariff.group, lp = quote?.loaderPrice || 0;
+  document.querySelectorAll('#segment button').forEach(b => b.classList.toggle('active', b.dataset.g === g));
+  document.getElementById('tariffs').innerHTML = TARIFFS.filter(t => t.group === g).map(t =>
+    `<div class="tariff ${t === tariff ? 'active' : ''}" data-id="${t.id}">
+      ${t.icon()}<div class="nm">${t.nm}</div>${t.spec ? `<div class="spec">${t.spec}</div>` : ''}
+      <div class="pr">${quote ? (quote.prices[t.id] + (g === 'cargo' ? loaders * lp : 0)).toLocaleString('ru') + ' ₸' : '…'}</div></div>`).join('');
+  document.getElementById('cargoOpts').style.display = g === 'cargo' ? 'block' : 'none';
+  document.getElementById('icOpts').style.display = g === 'intercity' ? 'block' : 'none';
+  const surge = g === 'taxi' && quote?.surge > 1 ? quote.surge : 0;
+  document.getElementById('surge').style.display = surge ? 'flex' : 'none';
+  document.getElementById('surgeK').textContent = surge ? `×${surge.toFixed(1)}` : '';
+  document.getElementById('loaders').textContent = loaders;
+  document.getElementById('loaderPrice').textContent = lp ? `${lp.toLocaleString('ru')} ₸ за человека` : '';
+}
+document.getElementById('segment').onclick = e => {
+  const g = e.target.closest('button')?.dataset.g;
+  if (!g || rideActive || g === tariff.group) return;
+  tariff = TARIFFS.find(t => t.group === g);
+  renderTariffs();
+};
+const setLoaders = n => { if (!rideActive) { loaders = Math.max(0, Math.min(4, n)); renderTariffs(); } };
+document.getElementById('ldMinus').onclick = () => setLoaders(loaders - 1);
+document.getElementById('ldPlus').onclick = () => setLoaders(loaders + 1);
+document.getElementById('tariffs').onclick = e => {
+  const el = e.target.closest('.tariff');
+  if (!el || rideActive) return;
+  tariff = TARIFFS.find(t => t.id === el.dataset.id);
+  renderTariffs();
+};
+
+let carMarker, rideActive = false, order = null, quote = null;
+const showStatus = (text, spinning = true) => {
+  document.getElementById('status').style.display = 'flex';
+  document.getElementById('spin').style.display = spinning ? 'block' : 'none';
+  document.getElementById('statusText').innerHTML = text;
+};
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' })[c]);
+
+const clientId = (() => {
+  try {
+    let id = localStorage.getItem('clientId');
+    if (!id) { id = crypto.randomUUID(); localStorage.setItem('clientId', id); }
+    return id;
+  } catch { return crypto.randomUUID(); }
+})();
+
+async function api(path, body) {
+  const r = await fetch(path, body ? { method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify(body) } : undefined);
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || 'Ошибка сервера');
+  return j;
+}
+
+
+function placeCar(layerOrMarker, d) {
+  layerOrMarker.setLatLng([d.lat, d.lon]);
+  const el = layerOrMarker.getElement()?.querySelector('.car-ic');
+  if (el && d.heading != null) el.style.transform = `rotate(${d.heading}deg)`;
+}
+
+function moveCar(d) {
+  if (!d || isNaN(d.lat)) return;
+  if (!carMarker) carMarker = L.marker([d.lat, d.lon], { icon:L.divIcon({ className:'', html:mapIcon(d.tariff), iconSize:[22, 40] }), zIndexOffset:1000 }).addTo(map);
+  placeCar(carMarker, d);
+}
+
+function applyOrder(o) {
+  const btn = document.getElementById('order');
+  rideActive = ['scheduled', 'searching', 'accepted', 'arrived', 'in_progress'].includes(o.status);
+  order = rideActive ? o : null;
+
+  if (rideActive && !points.from) {
+    tariff = tariffOf(o.tariff);
+    points.from = o.from;
+    setPoint('from', o.from.lat, o.from.lon, o.fromLabel);
+    setPoint('to', o.to.lat, o.to.lon, o.toLabel);
+  }
+
+  btn.style.display = o.status === 'in_progress' ? 'none' : '';
+  btn.textContent = rideActive ? 'Отменить' : 'Заказать';
+  btn.classList.toggle('cancel', rideActive);
+  if (o.driver) moveCar(o.driver);
+
+  const d = o.driver, car = d && `<b>${esc(d.car)}</b> · ${esc(d.plate)}`;
+  switch (o.status) {
+    case 'scheduled':
+      showStatus(`<b>Заказ на ${fmtDate(o.departAt)}</b><div class="sub">Начнём искать водителя за 30 минут до выезда · ${o.price.toLocaleString('ru')} ₸</div>`, false);
+      break;
+    case 'searching':
+      showStatus(`Ищем машину «${tariffOf(o.tariff).nm}»…<div class="sub">${o.offerTo ? 'Предложили водителю поблизости' : 'Ждём свободного водителя'}</div>`);
+      break;
+    case 'accepted': {
+      const eta = Math.max(1, Math.round(map.distance([d.lat, d.lon], [o.from.lat, o.from.lon]) / 1000 * 2.2));
+      showStatus(`${car}<div class="sub">${esc(d.name)} ${fmtRating(d.rating)} едет к вам · ~${eta} мин</div>`, false);
+      break;
+    }
+    case 'arrived': showStatus(`<b>Водитель на месте</b><div class="sub">${esc(d.car)} · ${esc(d.plate)} · ${esc(d.name)} ${fmtRating(d.rating)}</div>`, false); break;
+    case 'in_progress': showStatus(`<b>В пути</b><div class="sub">К оплате ${o.price} ₸ · ${esc(d.name)}</div>`, false); break;
+    case 'done':
+      showStatus('', false);
+      ratingWidget(document.getElementById('statusText'), {
+        title:`Вы приехали! К оплате ${o.price} ₸<div class="sub">Как вам поездка с ${esc(d.name)}?</div>`,
+        good:['Вежливый водитель', 'Чистый салон', 'Аккуратное вождение', 'Быстро приехал'],
+        bad:['Грубость', 'Опоздал', 'Опасное вождение', 'Грязно в салоне', 'Не тот маршрут'],
+        onSubmit:(stars, tags) => api(`/api/orders/${o.id}/rate`, { by:'client', id:clientId, stars, tags }),
+      });
+      break;
+    case 'cancelled': showStatus('Заказ отменён', false); break;
+    case 'no_drivers': showStatus('<b>Свободных машин нет</b><div class="sub">Попробуйте другой тариф или чуть позже</div>', false); break;
+  }
+  if (!rideActive && carMarker) { map.removeLayer(carMarker); carMarker = null; }
+}
+
+const events = new EventSource(`/api/events?role=client&id=${clientId}`);
+events.addEventListener('order', e => applyOrder(JSON.parse(e.data)));
+events.addEventListener('driver_location', e => moveCar(JSON.parse(e.data)));
+
+document.getElementById('order').onclick = async () => {
+  try {
+    if (order) {
+      applyOrder(await api(`/api/orders/${order.id}/cancel`, { clientId }));
+      return;
+    }
+    if (!points.from || !points.to) return alert('Укажите откуда и куда');
+    showStatus('Создаём заказ…');
+    applyOrder(await api('/api/orders', {
+      clientId, tariff:tariff.id, from:points.from, to:points.to, quoteId:quote?.quoteId,
+      fromLabel:document.getElementById('from').value, toLabel:document.getElementById('to').value,
+      loaders, cargoNote:document.getElementById('cargoNote').value,
+      departAt:tariff.group === 'intercity' && document.getElementById('departAt').value ? new Date(document.getElementById('departAt').value).toISOString() : null,
+    }));
+  } catch (e) { showStatus(esc(e.message), false); }
+};
+
+const nearby = L.layerGroup().addTo(map);
+async function refreshNearby() {
+  nearby.clearLayers();
+  const c = points.from || { lat:map.getCenter().lat, lon:map.getCenter().lng };
+  if (rideActive) return;
+  try {
+    for (const d of await api(`/api/drivers/nearby?lat=${c.lat}&lon=${c.lon}`)) {
+      const m = L.marker([d.lat, d.lon], { icon:L.divIcon({ className:'', html:mapIcon(d.tariff), iconSize:[22, 40] }) }).addTo(nearby);
+      placeCar(m, d);
+    }
+  } catch {}
+}
+refreshNearby();
+setInterval(refreshNearby, 5000);
+
+const $id = id => document.getElementById(id);
+$id('cityList').innerHTML = cityOptions();
+$id('tDate').value = localInput(Date.now()).slice(0, 10);
+let tSeats = 1, myTrips = [];
+const setSeats = n => { tSeats = Math.max(1, Math.min(7, n)); $id('tSeats').textContent = tSeats; };
+$id('tMinus').onclick = () => setSeats(tSeats - 1);
+$id('tPlus').onclick = () => setSeats(tSeats + 1);
+
+function showTrips(open) {
+  $id('mainPanel').style.display = open ? 'none' : '';
+  $id('tripsPanel').style.display = open ? '' : 'none';
+  if (open) loadMyTrips();
+}
+$id('openTrips').onclick = () => showTrips(true);
+$id('closeTrips').onclick = () => showTrips(false);
+
+function tripCard(t, mine) {
+  const d = t.driver, seats = mine ? t.myBooking.seats : tSeats;
+  return `<div class="trip">
+    <div class="top"><b>${fmtDate(t.departAt)}</b><span class="price">${(t.pricePerSeat * seats).toLocaleString('ru')} ₸</span></div>
+    <div>${esc(t.from.label)} → ${esc(t.to.label)}</div>
+    <div class="sub">${esc(d.name)} ${fmtRating(d.rating)} · ${esc(d.car)} · ${esc(d.plate)}</div>
+    <div class="sub">${t.km.toFixed(0)} км · ~${fmtHours(t.hours)} · ${t.pricePerSeat.toLocaleString('ru')} ₸ за место · свободно ${t.seatsLeft} из ${t.seats}</div>
+    ${t.comment ? `<div class="sub">«${esc(t.comment)}»</div>` : ''}
+    ${mine
+      ? `<div class="sub"><span class="badge">${t.status === 'departed' ? 'В пути' : `Забронировано: ${seats}`}</span></div>
+         ${t.status === 'open' ? `<button class="cta decline" data-unbook="${t.id}">Отменить бронь</button>` : ''}`
+      : `<button class="cta order" data-book="${t.id}">Забронировать ${seats} ${seats === 1 ? 'место' : 'места'}</button>`}
+  </div>`;
+}
+
+function renderMyTrips() {
+  const box = $id('tResults');
+  const mineHtml = myTrips.length ? `<div class="section-title">Мои брони</div>${myTrips.map(t => tripCard(t, true)).join('')}` : '';
+  box.dataset.mine = mineHtml;
+  box.innerHTML = mineHtml + (box.dataset.found || '');
+}
+
+async function loadMyTrips() {
+  try { myTrips = await api(`/api/trips/mine?role=client&id=${clientId}`); } catch {}
+  renderMyTrips();
+}
+
+$id('tSearch').onclick = async () => {
+  const from = cityPoint($id('tFrom').value), to = cityPoint($id('tTo').value);
+  if (!from || !to) return alert('Выберите города из списка');
+  if (from.label === to.label) return alert('Города совпадают');
+  const box = $id('tResults');
+  try {
+    const list = await api(`/api/trips/search?clientId=${clientId}&fromLat=${from.lat}&fromLon=${from.lon}&toLat=${to.lat}&toLon=${to.lon}&date=${$id('tDate').value}&seats=${tSeats}`);
+    box.dataset.found = `<div class="section-title">${esc(from.label)} → ${esc(to.label)}</div>` +
+      (list.filter(t => !t.myBooking).map(t => tripCard(t, false)).join('') || '<div class="empty">На эту дату рейсов нет. Попробуйте другой день</div>');
+  } catch (e) { box.dataset.found = `<div class="empty">${esc(e.message)}</div>`; }
+  renderMyTrips();
+};
+
+$id('tResults').onclick = async e => {
+  const book = e.target.dataset.book, unbook = e.target.dataset.unbook;
+  if (!book && !unbook) return;
+  try {
+    if (book) await api(`/api/trips/${book}/book`, { clientId, seats:tSeats });
+    else await api(`/api/trips/${unbook}/unbook`, { clientId });
+    $id('tResults').dataset.found = '';
+    await loadMyTrips();
+    if (book) $id('tSearch').click();
+  } catch (err) { alert(err.message); }
+};
+
+events.addEventListener('trip', () => loadMyTrips());
+
+document.getElementById('go').onclick = () => {
+  if (!points.from || !points.to) alert('Выберите адреса из подсказок или кликните по карте');
+  else route();
+};
+
+const TURN = { left:'налево', right:'направо', 'slight left':'плавно налево', 'slight right':'плавно направо',
+  'sharp left':'резко налево', 'sharp right':'резко направо', straight:'прямо', uturn:'развернитесь' };
+
+function stepText(s) {
+  const m = s.maneuver, road = s.name ? ` на ${s.name}` : '';
+  if (m.type === 'depart') return `Начните движение${road}`;
+  if (m.type === 'arrive') return 'Вы прибыли';
+  if (m.type === 'roundabout' || m.type === 'rotary') return `На кольце ${m.exit || ''}-й съезд${road}`;
+  return `Поверните ${TURN[m.modifier] || 'прямо'}${road}`;
+}
+
+async function route() {
+  const { from, to } = points;
+  const url = `/osrm/route/v1/driving/${from.lon},${from.lat};${to.lon},${to.lat}?overview=full&geometries=geojson&steps=true`;
+  const j = await (await fetch(url)).json();
+  if (!j.routes?.length) { alert('Маршрут не найден'); return; }
+  const r = j.routes[0];
+  if (routeLine) map.removeLayer(routeLine);
+  routeLine = L.geoJSON(r.geometry, { style:{ color:'#c8553d', weight:6, opacity:.9, lineCap:'round' } }).addTo(map);
+  map.fitBounds(routeLine.getBounds(), { padding:[40, 40], paddingBottomRight:[40, 320] });
+
+  const km = r.distance / 1000, min = Math.round(r.duration / 60);
+  quote = null;
+  renderTariffs();
+  api('/api/quote', { from, to }).then(q => { quote = q; renderTariffs(); }).catch(() => {});
+  document.getElementById('meta').textContent = `${km.toFixed(1)} км · ${min} мин в пути`;
+  document.getElementById('steps').innerHTML = r.legs[0].steps
+    .map(s => `<li>${stepText(s)} <span style="color:#999">${s.distance > 0 ? Math.round(s.distance) + ' м' : ''}</span></li>`).join('');
+  document.getElementById('info').style.display = 'block';
+  document.getElementById('go').style.display = 'none';
+}
+</script>
+</body>
+</html>

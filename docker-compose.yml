@@ -1,0 +1,67 @@
+name: taxi
+
+services:
+  osrm-download:
+    image: curlimages/curl:8.11.1
+    user: root
+    volumes:
+      - osrm-data:/data
+    entrypoint: ["sh", "-c"]
+    command:
+      - '[ -f /data/kz.osrm.mldgr ] || [ -f /data/kz.osm.pbf ] || curl -fL --retry 3 -o /data/kz.osm.pbf.part "$${OSM_PBF_URL}" && mv /data/kz.osm.pbf.part /data/kz.osm.pbf || [ -f /data/kz.osrm.mldgr ] || [ -f /data/kz.osm.pbf ]'
+    environment:
+      OSM_PBF_URL: https://download.geofabrik.de/asia/kazakhstan-latest.osm.pbf
+
+  osrm-prepare:
+    image: ghcr.io/project-osrm/osrm-backend:v6.0.0
+    volumes:
+      - osrm-data:/data
+      - ./osrm/prepare.sh:/prepare.sh:ro
+    entrypoint: ["sh", "/prepare.sh"]
+    depends_on:
+      osrm-download:
+        condition: service_completed_successfully
+
+  osrm:
+    image: ghcr.io/project-osrm/osrm-backend:v6.0.0
+    command: osrm-routed --algorithm mld --max-table-size 1000 /data/kz.osrm
+    volumes:
+      - osrm-data:/data
+    depends_on:
+      osrm-prepare:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: taxi
+      POSTGRES_USER: taxi
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-taxi_local_dev}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U taxi -d taxi"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  taxi:
+    build: .
+    image: taxi-app
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgres://taxi:${POSTGRES_PASSWORD:-taxi_local_dev}@postgres:5432/taxi
+      OSRM_URL: http://osrm:5000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      osrm:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  osrm-data:
+  pg-data:

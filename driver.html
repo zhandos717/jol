@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Такси Водитель</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link rel="stylesheet" href="app.css">
+<script src="rating.js"></script>
+<script src="vehicles.js"></script>
+<script src="cities.js"></script>
+<style>
+  .topbar { position:absolute; left:12px; right:72px; top:max(12px, env(safe-area-inset-top)); z-index:1000; border-radius:100px;
+    display:flex; align-items:center; gap:10px; padding:6px 6px 6px 18px; max-width:360px; }
+  .topbar .earn { flex:1; font-size:15px; } .topbar .earn .sub { color:var(--muted); font-size:12px; }
+  .toggle { padding:10px 18px; border-radius:100px; font-weight:600; font-size:15px; background:var(--fill); }
+  .toggle.on { background:#30d158; color:#fff; }
+  .form { display:grid; gap:8px; }
+  .form input, .form select { width:100%; padding:14px 16px; border:none; border-radius:16px; background:var(--fill); font:inherit; font-size:16px; color:var(--fg); outline:none; appearance:none; }
+  .card-title { font-size:20px; font-weight:700; margin:4px 4px 2px; }
+  .card-sub { color:var(--muted); font-size:14px; margin:0 4px 10px; }
+  .addr { display:flex; gap:10px; align-items:flex-start; padding:10px 4px; font-size:15px; }
+  .addr .d { flex:none; width:12px; height:12px; border-radius:50%; margin-top:4px; border:3px solid; }
+  .price-big { font-size:34px; font-weight:700; letter-spacing:-.02em; }
+  .row2 { display:flex; gap:8px; } .row2 .cta { flex:1; }
+  .decline { background:var(--fill); }
+  .accept { background:#30d158; color:#fff; position:relative; overflow:hidden; }
+  .accept .bar { position:absolute; left:0; bottom:0; height:4px; background:rgba(255,255,255,.6); }
+  .sim { display:flex; align-items:center; justify-content:space-between; color:var(--muted); font-size:13px; padding:10px 6px 2px; }
+  .nav-link { display:block; text-align:center; color:var(--blue); font-size:15px; padding:10px; text-decoration:none; }
+  .center { text-align:center; padding:8px 0 4px; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="topbar glass">
+  <div class="earn"><b id="earned">0 ₸</b><div class="sub" id="trips">0 поездок</div></div>
+  <button class="toggle" id="toggle">Выйти на линию</button>
+</div>
+<button class="fab glass" id="geo" aria-label="Моё местоположение">
+  <svg viewBox="0 0 24 24" fill="currentColor"><path d="M21.3 2.7a1 1 0 0 0-1.06-.23L3.1 9.1a1 1 0 0 0 .07 1.9l7.17 2.17 2.17 7.17a1 1 0 0 0 1.9.07l6.63-17.14a1 1 0 0 0-.23-1.06z"/></svg>
+</button>
+<div class="panel glass">
+  <div class="grabber"></div>
+  <div id="view"></div>
+  <label class="sim"><span>Симуляция движения (для теста без GPS)</span><input type="checkbox" id="sim"></label>
+</div>
+<script>
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' })[c]);
+const $ = id => document.getElementById(id);
+
+const store = {
+  get(k, def) { try { return JSON.parse(localStorage.getItem(k)) ?? def; } catch { return def; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+const driverId = store.get('driverId') || crypto.randomUUID();
+store.set('driverId', driverId);
+let profile = store.get('profile', { name:'', car:'', plate:'', tariff:'eco' });
+
+async function api(path, body) {
+  const r = await fetch(path, { method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify(body) });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || 'Ошибка сервера');
+  return j;
+}
+
+const map = L.map('map', { zoomControl:false }).setView([43.238, 76.889], 14);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution:'© OpenStreetMap', maxZoom:19 }).addTo(map);
+
+let pos = store.get('lastPos', { lat:43.238 + (Math.random() - .5) * .02, lon:76.889 + (Math.random() - .5) * .03 });
+let heading = 0, online = false, offer = null, order = null, toRate = null, events = null, offerTick, simTimer;
+const me = L.marker([pos.lat, pos.lon], { icon:L.divIcon({ className:'', html:mapIcon(profile.tariff), iconSize:[22, 40] }), zIndexOffset:1000 }).addTo(map);
+const routeLayer = L.layerGroup().addTo(map);
+const surgeLayer = L.layerGroup().addTo(map);
+
+async function refreshSurge() {
+  surgeLayer.clearLayers();
+  if (!online || !TARIFFS.find(t => t.id === profile.tariff && t.group === 'taxi')) return;
+  try {
+    const zones = await (await fetch(`/api/surge/map?lat=${pos.lat}&lon=${pos.lon}`)).json();
+    for (const z of zones) {
+      const a = Math.min(.45, .12 + (z.surge - 1) * .25);
+      L.rectangle([[z.south, z.west], [z.north, z.east]], { stroke:false, fillColor:'#c8553d', fillOpacity:a, interactive:false }).addTo(surgeLayer);
+      L.marker([(z.south + z.north) / 2, (z.west + z.east) / 2], { interactive:false,
+        icon:L.divIcon({ className:'', iconSize:[44, 22], html:`<span class="surge-label">×${z.surge.toFixed(1)}</span>` }) }).addTo(surgeLayer);
+    }
+  } catch {}
+}
+setInterval(refreshSurge, 20000);
+
+function setPos(lat, lon) {
+  if (lat !== pos.lat || lon !== pos.lon)
+    heading = Math.atan2((lon - pos.lon) * Math.cos(pos.lat * Math.PI / 180), lat - pos.lat) * 180 / Math.PI;
+  pos = { lat, lon };
+  store.set('lastPos', pos);
+  me.setLatLng([lat, lon]);
+  const el = me.getElement()?.querySelector('.car-ic');
+  if (el) el.style.transform = `rotate(${heading}deg)`;
+  if (online) api('/api/driver/location', { id:driverId, lat, lon, heading }).catch(() => {});
+}
+
+const simBox = $('sim');
+simBox.checked = store.get('sim', !navigator.geolocation);
+simBox.onchange = () => store.set('sim', simBox.checked);
+navigator.geolocation?.watchPosition(p => { if (!simBox.checked) setPos(p.coords.latitude, p.coords.longitude); },
+  () => { simBox.checked = true; }, { enableHighAccuracy:true });
+map.on('click', e => { if (simBox.checked && !simTimer) setPos(e.latlng.lat, e.latlng.lng); });
+$('geo').onclick = () => map.setView([pos.lat, pos.lon], 16);
+
+async function osrm(a, b) {
+  const j = await (await fetch(`/osrm/route/v1/driving/${a.lon},${a.lat};${b.lon},${b.lat}?overview=full&geometries=geojson`)).json();
+  return j.routes[0].geometry.coordinates.map(([lon, lat]) => [lat, lon]);
+}
+
+function simulate(path) {
+  clearInterval(simTimer);
+  simTimer = null;
+  if (!simBox.checked || path.length < 2) return;
+  const pts = [path[0]];
+  for (let i = 1; i < path.length; i++) {
+    const n = Math.ceil(map.distance(path[i - 1], path[i]) / 40);
+    for (let k = 1; k <= n; k++) pts.push([path[i - 1][0] + (path[i][0] - path[i - 1][0]) * k / n, path[i - 1][1] + (path[i][1] - path[i - 1][1]) * k / n]);
+  }
+  let i = 0;
+  simTimer = setInterval(() => {
+    if (++i >= pts.length) { clearInterval(simTimer); simTimer = null; return; }
+    setPos(pts[i][0], pts[i][1]);
+  }, 300);
+}
+
+async function showRoute(to, color) {
+  routeLayer.clearLayers();
+  if (!to) return;
+  const path = await osrm(pos, to);
+  L.polyline(path, { color, weight:6, opacity:.9, lineCap:'round' }).addTo(routeLayer);
+  L.marker([to.lat, to.lon], { icon:L.divIcon({ className:'', iconSize:[28, 28], html:`<div class="end-pin" style="background:${color}"></div>` }) }).addTo(routeLayer);
+  map.fitBounds(L.latLngBounds(path), { padding:[60, 40], paddingBottomRight:[40, 340] });
+  simulate(path);
+}
+
+const navUrl = to => `https://yandex.kz/maps/?rtext=${pos.lat},${pos.lon}~${to.lat},${to.lon}&rtt=auto`;
+const addr = (color, text) => `<div class="addr"><span class="d" style="border-color:${color}"></span><span>${esc(text) || 'Точка на карте'}</span></div>`;
+
+const tariffOptions = g => TARIFFS.filter(t => t.group === g)
+  .map(t => `<option value="${t.id}" ${t.id === profile.tariff ? 'selected' : ''}>${t.nm}${t.spec ? ' · ' + t.spec : ''}</option>`).join('');
+const cargoInfo = o => tariffOf(o.tariff).group !== 'cargo' ? '' :
+  `<div class="card-sub">Грузчики: ${o.loaders || 'нет'}${o.cargoNote ? ' · ' + esc(o.cargoNote) : ''}</div>`;
+
+let tripsMode = false, myTrips = [], suggest = null;
+
+async function loadMyTrips() {
+  try { myTrips = await (await fetch(`/api/trips/mine?role=driver&id=${driverId}`)).json(); } catch {}
+  if (tripsMode) renderTrips();
+}
+
+function renderTrips() {
+  const v = $('view');
+  v.innerHTML = `<div class="sheet-head"><b>Мои рейсы</b><button id="tBack">Назад</button></div>
+    <datalist id="cityList">${cityOptions()}</datalist>
+    <div class="form2">
+      <input id="tFrom" list="cityList" placeholder="Откуда (город)">
+      <input id="tTo" list="cityList" placeholder="Куда (город)">
+      <div class="opt">Выезд<input type="datetime-local" id="tWhen" value="${localInput(Date.now() + 86400000).slice(0, 11)}08:00"></div>
+      <div class="opt">Мест<input type="number" id="tSeats" min="1" max="7" value="3" style="width:60px"></div>
+      <div class="opt">Цена за место, ₸<input type="number" id="tPrice" min="500" step="100" placeholder="—" style="width:110px"></div>
+      <input id="tComment" maxlength="300" placeholder="Комментарий: багаж, остановки, без курения">
+    </div>
+    <div class="card-sub" id="tHint" style="margin-top:6px"></div>
+    <button class="cta go" id="tCreate">Опубликовать рейс</button>
+    <div class="trip-list">${myTrips.map(t => `<div class="trip">
+      <div class="top"><b>${fmtDate(t.departAt)}</b><span class="price">${(t.seats - t.seatsLeft) * t.pricePerSeat} ₸</span></div>
+      <div>${esc(t.from.label)} → ${esc(t.to.label)}</div>
+      <div class="sub">Занято ${t.seats - t.seatsLeft} из ${t.seats} · ${t.pricePerSeat} ₸ за место · ${t.status === 'departed' ? 'в пути' : 'набор пассажиров'}</div>
+      ${t.bookings.map(b => `<div class="sub">• ${b.seats} ${b.seats === 1 ? 'место' : 'места'} · пассажир ${fmtRating(b.rating)}</div>`).join('')}
+      <div class="row2">${t.status === 'open'
+        ? `<button class="cta decline" data-st="cancelled" data-id="${t.id}">Отменить</button><button class="cta order" data-st="departed" data-id="${t.id}">Выехали</button>`
+        : `<button class="cta go" data-st="done" data-id="${t.id}">Приехали</button>`}</div>
+    </div>`).join('') || '<div class="empty">Активных рейсов нет</div>'}</div>`;
+
+  $('tBack').onclick = () => { tripsMode = false; render(); };
+  const hint = async () => {
+    const a = cityPoint($('tFrom').value), b = cityPoint($('tTo').value);
+    if (!a || !b || a.label === b.label) return;
+    suggest = await (await fetch(`/api/trips/suggest-price?fromLat=${a.lat}&fromLon=${a.lon}&toLat=${b.lat}&toLon=${b.lon}`)).json();
+    $('tHint').textContent = `${suggest.km.toFixed(0)} км · ~${fmtHours(suggest.hours)} · рекомендуем ${suggest.pricePerSeat} ₸ за место`;
+    if (!$('tPrice').value) $('tPrice').value = suggest.pricePerSeat;
+  };
+  $('tFrom').onchange = hint;
+  $('tTo').onchange = hint;
+  $('tCreate').onclick = async () => {
+    const from = cityPoint($('tFrom').value), to = cityPoint($('tTo').value);
+    if (!from || !to) return alert('Выберите города из списка');
+    try {
+      await api('/api/trips', { driver:{ id:driverId, ...profile }, from, to, departAt:new Date($('tWhen').value).toISOString(),
+        seats:+$('tSeats').value, pricePerSeat:+$('tPrice').value, comment:$('tComment').value });
+      await loadMyTrips();
+    } catch (e) { alert(e.message); }
+  };
+  v.querySelectorAll('[data-st]').forEach(b => b.onclick = async () => {
+    try { await api(`/api/trips/${b.dataset.id}/status`, { driverId, status:b.dataset.st }); await loadMyTrips(); }
+    catch (e) { alert(e.message); }
+  });
+}
+
+const tripsLink = '<button class="link-btn" id="openTrips">Межгород: мои рейсы с попутчиками ›</button>';
+function bindTripsLink() {
+  const b = $('openTrips');
+  if (b) b.onclick = () => {
+    if (!profile.name) return alert('Сначала заполните профиль');
+    tripsMode = true;
+    renderTrips();
+    loadMyTrips();
+  };
+}
+
+function render() {
+  if (tripsMode && !offer && !order) return renderTrips();
+  const v = $('view');
+  $('toggle').textContent = online ? 'На линии' : 'Выйти на линию';
+  $('toggle').classList.toggle('on', online);
+
+  if (!online) {
+    v.innerHTML = `<div class="card-title">Профиль водителя</div><div class="form">
+      <input id="pName" placeholder="Имя" value="${esc(profile.name)}">
+      <input id="pCar" placeholder="Машина, например Toyota Camry" value="${esc(profile.car)}">
+      <input id="pPlate" placeholder="Госномер" value="${esc(profile.plate)}">
+      <select id="pTariff"><optgroup label="Такси">${tariffOptions('taxi')}</optgroup><optgroup label="Грузовое">${tariffOptions('cargo')}</optgroup></select>
+    </div><button class="cta go" id="goOnline">Выйти на линию</button>${tripsLink}`;
+    $('goOnline').onclick = goOnline;
+    bindTripsLink();
+    return;
+  }
+
+  if (offer) {
+    const left = Math.max(0, offer.offerExpiresAt - Date.now());
+    v.innerHTML = `<div class="card-sub">Новый заказ · ${tariffOf(offer.tariff).nm} · до клиента ${offer.pickupKm.toFixed(1)} км</div>
+      <div class="card-sub">Пассажир ${fmtRating(offer.client.rating)} · ${offer.client.trips} поездок</div>${cargoInfo(offer)}
+      <div class="price-big">${offer.price} ₸${offer.surge > 1 ? ` <span class="surge-label" style="vertical-align:middle;font-size:14px">×${offer.surge.toFixed(1)}</span>` : ''}</div>
+      <div class="card-sub">${offer.km.toFixed(1)} км · ${Math.round(offer.min)} мин</div>
+      ${addr('#c8553d', offer.fromLabel)}${addr('var(--dest)', offer.toLabel)}
+      <div class="row2"><button class="cta decline" id="decline">Пропустить</button>
+      <button class="cta accept" id="accept">Принять<span class="bar" id="bar" style="width:${left / 150}%"></span></button></div>`;
+    $('accept').onclick = () => act('accept');
+    $('decline').onclick = () => act('decline');
+    return;
+  }
+
+  if (order) {
+    const o = order, step = {
+      accepted: ['Едем к клиенту', o.from, 'Я на месте', 'arrived'],
+      arrived: ['Ожидаем клиента', null, 'Начать поездку', 'start'],
+      in_progress: ['Везём клиента', o.to, 'Завершить поездку', 'finish'],
+    }[o.status];
+    v.innerHTML = `<div class="card-title">${step[0]}</div><div class="card-sub">${o.price} ₸ · ${tariffOf(o.tariff).nm} · пассажир ${fmtRating(o.client.rating)}</div>${cargoInfo(o)}
+      ${o.status === 'in_progress' ? '' : addr('#c8553d', o.fromLabel)}${addr('var(--dest)', o.toLabel)}
+      <button class="cta go" id="next">${step[2]}</button>
+      ${step[1] ? `<a class="nav-link" href="${navUrl(step[1])}" target="_blank" rel="noopener">Открыть в навигаторе ›</a>` : ''}`;
+    $('next').onclick = () => act(step[3]);
+    return;
+  }
+
+  if (toRate) {
+    const o = toRate;
+    ratingWidget(v, {
+      title:`Поездка завершена: +${o.price} ₸<div class="card-sub" style="margin-top:4px">Оцените пассажира</div>`,
+      good:['Вежливый', 'Вышел вовремя', 'Точный адрес', 'Чистоплотный'],
+      bad:['Опоздал', 'Грубость', 'Неверный адрес', 'Испачкал салон'],
+      onSubmit:async (stars, tags) => {
+        await api(`/api/orders/${o.id}/rate`, { by:'driver', id:driverId, stars, tags });
+        setTimeout(() => { toRate = null; render(); }, 1200);
+      },
+    });
+    return;
+  }
+
+  v.innerHTML = `<div class="center"><div class="spin" style="margin:6px auto 12px"></div>
+    <div class="card-title">Ищем заказы</div><div class="card-sub">Вы на линии · ${tariffOf(profile.tariff).nm}</div></div>
+    <button class="cta decline" id="goOffline">Уйти с линии</button>${tripsLink}`;
+  $('goOffline').onclick = goOffline;
+  bindTripsLink();
+}
+
+async function act(action) {
+  const o = offer || order;
+  try {
+    const res = await api(`/api/orders/${o.id}/${action}`, { driverId });
+    if (action === 'decline') { offer = null; render(); }
+    else applyOrder(res);
+  } catch (e) {
+    alert(e.message);
+    offer = null;
+    render();
+  }
+}
+
+function applyOrder(o) {
+  const prev = order?.status;
+  offer = null;
+  clearInterval(offerTick);
+  order = ['accepted', 'arrived', 'in_progress'].includes(o.status) ? o : null;
+  if (o.status === 'done' && prev) {
+    setStats(stats.earned + o.price, stats.trips + 1);
+    routeLayer.clearLayers();
+    toRate = o;
+  }
+  if (o.status === 'cancelled' && prev) { routeLayer.clearLayers(); clearInterval(simTimer); simTimer = null; alert('Клиент отменил заказ'); }
+  if (order && order.status !== prev) showRoute(order.status === 'accepted' ? order.from : order.status === 'in_progress' ? order.to : null, order.status === 'accepted' ? '#c8553d' : '#30d158');
+  render();
+}
+
+let stats = { earned:0, trips:0 };
+function setStats(earned, trips, rating = stats.rating) {
+  stats = { earned, trips, rating };
+  $('earned').textContent = `${earned.toLocaleString('ru')} ₸`;
+  $('trips').innerHTML = `${trips} поездок · ${fmtRating(stats.rating)}`;
+}
+
+function connect() {
+  events?.close();
+  events = new EventSource(`/api/events?role=driver&id=${driverId}`);
+  events.addEventListener('offer', e => {
+    offer = JSON.parse(e.data);
+    clearInterval(offerTick);
+    offerTick = setInterval(() => { const b = $('bar'); if (b) b.style.width = Math.max(0, offer.offerExpiresAt - Date.now()) / 150 + '%'; }, 200);
+    navigator.vibrate?.(300);
+    render();
+  });
+  events.addEventListener('offer_expired', e => {
+    if (offer?.id === JSON.parse(e.data).id) { offer = null; clearInterval(offerTick); render(); }
+  });
+  events.addEventListener('order', e => applyOrder(JSON.parse(e.data)));
+  events.addEventListener('trip', () => loadMyTrips());
+}
+
+async function goOnline() {
+  profile = { name:$('pName').value.trim(), car:$('pCar').value.trim(), plate:$('pPlate').value.trim().toUpperCase(), tariff:$('pTariff').value };
+  if (!profile.name || !profile.car || !profile.plate) return alert('Заполните имя, машину и номер');
+  store.set('profile', profile);
+  me.setIcon(L.divIcon({ className:'', html:mapIcon(profile.tariff), iconSize:[22, 40] }));
+  try {
+    const d = await api('/api/driver/online', { id:driverId, ...profile, ...pos });
+    online = true;
+    setStats(d.earned, d.trips, d.rating);
+    connect();
+    render();
+    refreshSurge();
+  } catch (e) { alert(e.message); }
+}
+
+async function goOffline() {
+  try {
+    await api('/api/driver/offline', { id:driverId });
+    online = false;
+    events?.close();
+    render();
+  } catch (e) { alert(e.message); }
+}
+
+$('toggle').onclick = () => online ? goOffline() : profile.name ? goOnline().catch(() => {}) : render();
+render();
+if (store.get('profile')?.name) {
+  render();
+  goOnline();
+}
+</script>
+</body>
+</html>
