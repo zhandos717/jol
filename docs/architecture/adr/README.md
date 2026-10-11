@@ -18,3 +18,4 @@
 | [0012](0012-food-orchestrates-delivery.md) | Еда заказывает курьера у dispatch: оркестрация с запасным планом | Принято |
 | [0013](0013-proof-of-delivery-pin.md) | Код вручения и представления заказа по ролям | Принято |
 | [0014](0014-lite-deployment-profile.md) | Лёгкий профиль: те же сервисы в одном процессе | Принято |
+| [0015](0015-osrm-contraction-hierarchies.md) | OSRM на Contraction Hierarchies вместо MLD | Принято |

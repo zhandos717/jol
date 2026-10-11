@@ -13,14 +13,14 @@ help: ## Показать список команд
 
 up: ## Собрать и запустить весь стек (первый раз ещё готовит карту)
 	-$(LITE) down
-	$(COMPOSE) up -d --build --wait --wait-timeout 900
+	$(COMPOSE) up -d --build --wait --wait-timeout 1800
 	@echo "Пассажир: http://localhost:8080/"
 	@echo "Водитель: http://localhost:8080/driver.html"
 
 down: ## Остановить (данные остаются)
 	$(COMPOSE) down
 
-map: ## Подготовить карту для OSRM, если её ещё нет (разово, нужно ~1 ГБ RAM на несколько минут)
+map: ## Подготовить карту для OSRM, если её ещё нет (разово: ~15 мин на 1 vCPU, ~1 ГБ RAM)
 	$(COMPOSE) up osrm-download osrm-prepare
 
 up-lite: map ## Всё на ~250 МБ RAM: сервисы в одном процессе, OSRM через mmap
