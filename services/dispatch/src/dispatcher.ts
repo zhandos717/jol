@@ -1,4 +1,4 @@
-import { TARIFF_KIND, makeEvent, type DriverView } from '@jol/contracts';
+import { SEARCH_RADIUS_KM, makeEvent, type DriverView } from '@jol/contracts';
 import { withTx, enqueue, type Bus, type Logger, type OutboxRelay, type Pool } from '@jol/kit';
 import * as repo from './repo.js';
 import type { Order } from './repo.js';
@@ -7,7 +7,6 @@ import { toView, type Offer } from './views.js';
 export const OFFER_TIMEOUT_MS = 15_000;
 export const SEARCH_TIMEOUT_MS = 90_000;
 const RETRY_EMPTY_MS = 3_000;
-const RADIUS_KM = { city: 15, cargo: 15, intercity: 40 } as const;
 
 interface PendingOffer extends Offer {
   driver: DriverView;
@@ -98,7 +97,7 @@ export class Dispatcher {
     const [best] = await this.bus.request('fleet.candidates', {
       point: order.from,
       tariff: order.tariff,
-      radiusKm: RADIUS_KM[TARIFF_KIND[order.tariff]],
+      radiusKm: SEARCH_RADIUS_KM[order.tariff],
       exclude,
       limit: 1,
     });
@@ -116,8 +115,8 @@ export class Dispatcher {
       timer: setTimeout(() => void this.expire(orderId, best.driver.id), OFFER_TIMEOUT_MS),
     };
     this.offers.set(orderId, offer);
-    this.bus.notify('driver', offer.driverId, 'offer', { ...toView(order, offer), pickupKm: offer.pickupKm });
-    this.bus.notify('client', order.clientId, 'order', toView(order, offer));
+    this.bus.notify('driver', offer.driverId, 'offer', { ...toView(order, 'driver', offer), pickupKm: offer.pickupKm });
+    this.bus.notify('client', order.clientId, 'order', toView(order, 'client', offer));
   }
 
   private async expire(orderId: string, driverId: string) {
@@ -135,7 +134,7 @@ export class Dispatcher {
     });
     if (!updated) return;
     this.relay.kick();
-    this.bus.notify('client', updated.clientId, 'order', toView(updated));
+    this.bus.notify('client', updated.clientId, 'order', toView(updated, 'client'));
   }
 
   shutdown() {

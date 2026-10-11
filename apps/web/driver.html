@@ -30,6 +30,9 @@
   .sim { display:flex; align-items:center; justify-content:space-between; color:var(--muted); font-size:13px; padding:10px 6px 2px; }
   .nav-link { display:block; text-align:center; color:var(--brand); font-size:15px; padding:10px; text-decoration:none; }
   .center { text-align:center; padding:8px 0 4px; }
+  .code-input { width:100%; margin-top:6px; padding:14px; border:none; border-radius:16px; background:var(--fill); color:var(--fg);
+    font:inherit; font-size:24px; letter-spacing:.4em; text-align:center; outline:none; }
+  .call { color:var(--brand); }
 </style>
 </head>
 <body>
@@ -153,7 +156,9 @@ const addr = (color, text) => `<div class="addr"><span class="d" style="border-c
 
 const tariffOptions = g => TARIFFS.filter(t => t.group === g)
   .map(t => `<option value="${t.id}" ${t.id === profile.tariff ? 'selected' : ''}>${t.nm}${t.spec ? ' · ' + t.spec : ''}</option>`).join('');
-const cargoInfo = o => tariffOf(o.tariff).group !== 'cargo' ? '' :
+const deliveryInfo = o => !o.delivery ? '' : `<div class="card-sub">📦 ${esc(o.delivery.item)}</div>` + (o.status === 'in_progress'
+  ? `<div class="card-sub">Получатель: ${esc(o.delivery.recipientName)} · <a class="call" href="tel:${esc(o.delivery.recipientPhone.replace(/[^+0-9]/g, ''))}">${esc(o.delivery.recipientPhone)}</a></div>` : '');
+const cargoInfo = o => tariffOf(o.tariff).group !== 'cargo' ? deliveryInfo(o) :
   `<div class="card-sub">Грузчики: ${o.loaders || 'нет'}${o.cargoNote ? ' · ' + esc(o.cargoNote) : ''}</div>`;
 
 let tripsMode = false, myTrips = [], suggest = null;
@@ -234,7 +239,7 @@ function render() {
       <input id="pName" placeholder="Имя" value="${esc(profile.name)}">
       <input id="pCar" placeholder="Машина, например Toyota Camry" value="${esc(profile.car)}">
       <input id="pPlate" placeholder="Госномер" value="${esc(profile.plate)}">
-      <select id="pTariff"><optgroup label="Такси">${tariffOptions('taxi')}</optgroup><optgroup label="Грузовое">${tariffOptions('cargo')}</optgroup></select>
+      <select id="pTariff"><optgroup label="Такси">${tariffOptions('taxi')}</optgroup><optgroup label="Грузовое">${tariffOptions('cargo')}</optgroup><optgroup label="Курьер">${tariffOptions('courier')}</optgroup></select>
     </div><button class="cta go" id="goOnline">Выйти на линию</button>${tripsLink}`;
     $('goOnline').onclick = goOnline;
     bindTripsLink();
@@ -244,7 +249,7 @@ function render() {
   if (offer) {
     const left = Math.max(0, offer.offerExpiresAt - Date.now());
     v.innerHTML = `<div class="card-sub">Новый заказ · ${tariffOf(offer.tariff).nm} · до клиента ${offer.pickupKm.toFixed(1)} км</div>
-      <div class="card-sub">Пассажир ${fmtRating(offer.client.rating)} · ${offer.client.trips} поездок</div>${cargoInfo(offer)}
+      <div class="card-sub">${offer.delivery ? 'Отправитель' : 'Пассажир'} ${fmtRating(offer.client.rating)} · ${offer.client.trips} поездок</div>${cargoInfo(offer)}
       <div class="price-big">${offer.price} ₸${offer.surge > 1 ? ` <span class="surge-label" style="vertical-align:middle;font-size:14px">×${offer.surge.toFixed(1)}</span>` : ''}</div>
       <div class="card-sub">${offer.km.toFixed(1)} км · ${Math.round(offer.min)} мин</div>
       ${addr('#c8553d', offer.fromLabel)}${addr('var(--dest)', offer.toLabel)}
@@ -256,23 +261,32 @@ function render() {
   }
 
   if (order) {
-    const o = order, step = {
+    const o = order, step = (o.delivery ? {
+      accepted: ['Едем к отправителю', o.from, 'Я у отправителя', 'arrived'],
+      arrived: ['Заберите посылку', null, 'Забрал, везу', 'start'],
+      in_progress: ['Везём получателю', o.to, 'Доставлено', 'finish'],
+    } : {
       accepted: ['Едем к клиенту', o.from, 'Я на месте', 'arrived'],
       arrived: ['Ожидаем клиента', null, 'Начать поездку', 'start'],
       in_progress: ['Везём клиента', o.to, 'Завершить поездку', 'finish'],
-    }[o.status];
-    v.innerHTML = `<div class="card-title">${step[0]}</div><div class="card-sub">${o.price} ₸ · ${tariffOf(o.tariff).nm} · пассажир ${fmtRating(o.client.rating)}</div>${cargoInfo(o)}
+    })[o.status];
+    const needsCode = o.delivery && o.status === 'in_progress';
+    v.innerHTML = `<div class="card-title">${step[0]}</div><div class="card-sub">${o.price} ₸ · ${tariffOf(o.tariff).nm} · ${o.delivery ? 'отправитель' : 'пассажир'} ${fmtRating(o.client.rating)}</div>${cargoInfo(o)}
       ${o.status === 'in_progress' ? '' : addr('#c8553d', o.fromLabel)}${addr('var(--dest)', o.toLabel)}
+      ${needsCode ? '<input class="code-input" id="pin" inputmode="numeric" maxlength="4" placeholder="Код от получателя">' : ''}
       <button class="cta go" id="next">${step[2]}</button>
       ${step[1] ? `<a class="nav-link" href="${navUrl(step[1])}" target="_blank" rel="noopener">Открыть в навигаторе ›</a>` : ''}`;
-    $('next').onclick = () => act(step[3]);
+    $('next').onclick = () => {
+      if (needsCode && !/^\d{4}$/.test($('pin').value)) return alert('Попросите у получателя 4-значный код');
+      act(step[3], needsCode ? { code:$('pin').value } : {});
+    };
     return;
   }
 
   if (toRate) {
     const o = toRate;
     ratingWidget(v, {
-      title:`Поездка завершена: +${o.price} ₸<div class="card-sub" style="margin-top:4px">Оцените пассажира</div>`,
+      title:`${o.delivery ? 'Доставлено' : 'Поездка завершена'}: +${o.price} ₸<div class="card-sub" style="margin-top:4px">Оцените ${o.delivery ? 'отправителя' : 'пассажира'}</div>`,
       good:['Вежливый', 'Вышел вовремя', 'Точный адрес', 'Чистоплотный'],
       bad:['Опоздал', 'Грубость', 'Неверный адрес', 'Испачкал салон'],
       onSubmit:async (stars, tags) => {
@@ -290,16 +304,15 @@ function render() {
   bindTripsLink();
 }
 
-async function act(action) {
+async function act(action, extra = {}) {
   const o = offer || order;
   try {
-    const res = await api(`/api/orders/${o.id}/${action}`, { driverId });
+    const res = await api(`/api/orders/${o.id}/${action}`, { driverId, ...extra });
     if (action === 'decline') { offer = null; render(); }
     else applyOrder(res);
   } catch (e) {
     alert(e.message);
-    offer = null;
-    render();
+    if (action === 'accept' || action === 'decline') { offer = null; render(); }
   }
 }
 

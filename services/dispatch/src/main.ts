@@ -1,9 +1,10 @@
-import { randomUUID } from 'node:crypto';
+import { randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
-import { GeoPoint, Id, MAX_LOADERS, Review, TARIFF_KIND, TariffId, makeEvent, type AnyEvent } from '@jol/contracts';
+import { Delivery, GeoPoint, Id, MAX_LOADERS, Review, TARIFF_KIND, TariffId, makeEvent, type AnyEvent } from '@jol/contracts';
 import {
   DatabaseConfig,
+  DomainError,
   badRequest,
   conflict,
   createHttp,
@@ -26,6 +27,11 @@ const MIGRATIONS = fileURLToPath(new URL('../migrations', import.meta.url));
 const SCHEDULE_LEAD_MS = 30 * 60 * 1000;
 const SCHEDULER_TICK_MS = 15_000;
 const RECENT_PLACES = 8;
+/** 4-digit PIN: 10 000 combinations, so attempts must be capped. */
+const MAX_CODE_ATTEMPTS = 5;
+
+const newDeliveryCode = () => String(randomInt(0, 10_000)).padStart(4, '0');
+const sameCode = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
 const CreateOrder = z.object({
   clientId: Id,
@@ -38,6 +44,7 @@ const CreateOrder = z.object({
   cargoNote: z.string().max(300).default(''),
   departAt: z.string().datetime({ offset: true }).nullish(),
   quoteId: z.string().uuid().nullish(),
+  delivery: Delivery.omit({ code: true }).optional(),
 });
 const OrderParams = z.object({ id: z.string().uuid() });
 const IdempotencyKey = z.string().uuid().nullable();
@@ -49,6 +56,8 @@ const RateBody = z.object({
   tags: z.array(z.string().max(40)).max(5).default([]),
   comment: z.string().max(300).default(''),
 });
+
+const tooManyAttempts = () => new DomainError(429, 'too_many_attempts', 'Слишком много неверных кодов. Свяжитесь с отправителем');
 
 const ref = (o: Order) => ({ orderId: o.id, clientId: o.clientId, driverId: o.driverId });
 
@@ -63,9 +72,9 @@ await runService(DatabaseConfig, async ({ config, log, bus, onShutdown }) => {
   onShutdown(() => dispatcher.shutdown());
 
   const broadcast = (o: Order) => {
-    const view = toView(o, dispatcher.offerFor(o.id));
-    bus.notify('client', o.clientId, 'order', view);
-    if (o.driverId) bus.notify('driver', o.driverId, 'order', view);
+    const offer = dispatcher.offerFor(o.id);
+    bus.notify('client', o.clientId, 'order', toView(o, 'client', offer));
+    if (o.driverId) bus.notify('driver', o.driverId, 'order', toView(o, 'driver', offer));
   };
 
   /** Applies a status change and its event atomically; null means the caller lost a race. */
@@ -103,9 +112,9 @@ await runService(DatabaseConfig, async ({ config, log, bus, onShutdown }) => {
     if (role === 'driver') {
       const pending = dispatcher.offerForDriver(id);
       const o = pending && (await repo.get(pool, pending.orderId));
-      if (o && pending) offer = { ...toView(o, pending.offer), pickupKm: pending.offer.pickupKm };
+      if (o && pending) offer = { ...toView(o, 'driver', pending.offer), pickupKm: pending.offer.pickupKm };
     }
-    return { order: active && toView(active, dispatcher.offerFor(active.id)), offer };
+    return { order: active && toView(active, role, dispatcher.offerFor(active.id)), offer };
   });
 
   const http = createHttp(log, {
@@ -122,7 +131,7 @@ await runService(DatabaseConfig, async ({ config, log, bus, onShutdown }) => {
     const key = IdempotencyKey.parse(req.headers['idempotency-key'] ?? null);
     const replay = async () => {
       const existing = key && (await repo.findByIdempotencyKey(pool, b.clientId, key));
-      return existing ? toView(existing, dispatcher.offerFor(existing.id)) : null;
+      return existing ? toView(existing, 'client', dispatcher.offerFor(existing.id)) : null;
     };
     const previous = await replay();
     if (previous) return previous;
@@ -138,6 +147,8 @@ await runService(DatabaseConfig, async ({ config, log, bus, onShutdown }) => {
       }),
     ]);
     const isCargo = TARIFF_KIND[b.tariff] === 'cargo';
+    const isCourier = TARIFF_KIND[b.tariff] === 'courier';
+    if (isCourier && !b.delivery) throw badRequest('Укажите получателя и что везём');
     const scheduled = departAt !== null && departAt - SCHEDULE_LEAD_MS > Date.now();
 
     const created = await withTx(pool, async tx => {
@@ -157,6 +168,7 @@ await runService(DatabaseConfig, async ({ config, log, bus, onShutdown }) => {
         surge: quote.surge,
         loaders: isCargo ? b.loaders : 0,
         cargoNote: isCargo ? b.cargoNote : '',
+        delivery: isCourier && b.delivery ? { ...b.delivery, code: newDeliveryCode() } : null,
         departAt,
         declined: [],
         driver: null,
@@ -178,7 +190,7 @@ await runService(DatabaseConfig, async ({ config, log, bus, onShutdown }) => {
     const order = created;
     relay.kick();
     if (order.status === 'searching') void dispatcher.run(order.id);
-    return toView(order);
+    return toView(order, 'client');
   });
 
   http.post('/api/orders/:id/cancel', async req => {
@@ -191,7 +203,7 @@ await runService(DatabaseConfig, async ({ config, log, bus, onShutdown }) => {
     dispatcher.stop(id);
     dispatcher.release(updated.driverId);
     broadcast(updated);
-    return toView(updated);
+    return toView(updated, 'client');
   });
 
   http.post('/api/orders/:id/accept', async req => {
@@ -206,7 +218,7 @@ await runService(DatabaseConfig, async ({ config, log, bus, onShutdown }) => {
     if (!updated) throw conflict('Заказ уже отменён');
     dispatcher.markEngaged(driverId);
     broadcast(updated);
-    return toView(updated);
+    return toView(updated, 'driver');
   });
 
   http.post('/api/orders/:id/decline', async req => {
@@ -222,17 +234,28 @@ await runService(DatabaseConfig, async ({ config, log, bus, onShutdown }) => {
     finish: o => makeEvent('jol.dispatch.order.completed', { ...ref(o), driverId: o.driverId!, price: o.price, tariff: o.tariff }),
   };
 
+  const wrongCodes = new Map<string, number>();
+
   for (const action of Object.keys(DRIVER_ACTIONS) as DriverAction[]) {
     http.post(`/api/orders/:id/${action}`, async req => {
       const { id } = OrderParams.parse(req.params);
-      const { driverId } = ByDriver.parse(req.body);
+      const { driverId, code } = ByDriver.extend({ code: z.string().optional() }).parse(req.body);
       const o = await requireOrder(id);
       if (o.driverId !== driverId) throw forbidden('Чужой заказ');
+      if (action === 'finish' && o.delivery?.code) {
+        const attempts = wrongCodes.get(id) ?? 0;
+        if (attempts >= MAX_CODE_ATTEMPTS) throw tooManyAttempts();
+        if (!code || !sameCode(code, o.delivery.code)) {
+          wrongCodes.set(id, attempts + 1);
+          throw badRequest(`Неверный код получателя, осталось попыток: ${MAX_CODE_ATTEMPTS - attempts - 1}`);
+        }
+        wrongCodes.delete(id);
+      }
       const updated = await move(id, DRIVER_ACTIONS[action], EVENT_FOR[action]);
       if (!updated) throw conflict(`Нельзя из статуса ${o.status}`);
       if (updated.status === 'done') dispatcher.release(driverId);
       broadcast(updated);
-      return toView(updated);
+      return toView(updated, 'driver');
     });
   }
 

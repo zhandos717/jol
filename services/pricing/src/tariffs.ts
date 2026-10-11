@@ -7,7 +7,7 @@ interface Rate {
   perMin: number;
 }
 
-/** KZT. City tariffs are scaled by surge; cargo and intercity are fixed-price products. */
+/** KZT. City tariffs are scaled by surge; cargo, intercity and courier are fixed-price products. */
 export const RATES: Record<TariffId, Rate> = {
   eco: { base: 400, perKm: 120, perMin: 20 },
   comfort: { base: 540, perKm: 162, perMin: 27 },
@@ -16,6 +16,9 @@ export const RATES: Record<TariffId, Rate> = {
   cargo_m: { base: 4000, perKm: 240, perMin: 45 },
   cargo_l: { base: 7000, perKm: 330, perMin: 60 },
   intercity: { base: 3000, perKm: 95, perMin: 0 },
+  courier_foot: { base: 600, perKm: 120, perMin: 0 },
+  courier_bike: { base: 700, perKm: 100, perMin: 0 },
+  courier_car: { base: 900, perKm: 110, perMin: 8 },
 };
 
 export const LOADER_PRICE = 3000;

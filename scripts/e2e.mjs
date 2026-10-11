@@ -208,6 +208,33 @@ try {
     });
   });
 
+  await step('courier delivery: PIN goes only to the sender and gates completion', async () => {
+    const courierId = `e2e-cour-${run}`;
+    const senderId = `e2e-snd-${run}`;
+    const cStr = stream('driver', courierId);
+    try {
+      await ok('/api/driver/online', { id: courierId, name: 'Курьер', car: 'Велосипед', plate: '—', tariff: 'courier_bike', lat: ALMATY.lat + 0.003, lon: ALMATY.lon });
+      const r = await api('/api/orders', { clientId: senderId, tariff: 'courier_bike', from: ALMATY, to: DEST });
+      assert.equal(r.status, 400, 'courier order without recipient must be rejected');
+      const sent = await ok('/api/orders', {
+        clientId: senderId, tariff: 'courier_bike', from: ALMATY, to: DEST,
+        delivery: { item: 'Ключи', recipientName: 'Айгерим', recipientPhone: '+7 701 000 00 00' },
+      });
+      assert.match(sent.delivery.code, /^\d{4}$/);
+      const offer = await cStr.until('offer', o => o.id === sent.id);
+      assert.equal(offer.delivery.code, null, 'courier must not see the PIN');
+      for (const a of ['accept', 'arrived', 'start']) await ok(`/api/orders/${sent.id}/${a}`, { driverId: courierId });
+      const wrong = String((Number(sent.delivery.code) + 1) % 10000).padStart(4, '0');
+      const bad = await api(`/api/orders/${sent.id}/finish`, { driverId: courierId, code: wrong });
+      assert.equal(bad.status, 400);
+      const done = await ok(`/api/orders/${sent.id}/finish`, { driverId: courierId, code: sent.delivery.code });
+      assert.equal(done.status, 'done');
+      await ok('/api/driver/offline', { id: courierId });
+    } finally {
+      cStr.close();
+    }
+  });
+
   await step('driver goes offline', async () => {
     await ok('/api/driver/offline', { id: driverId });
   });
